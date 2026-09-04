@@ -8,7 +8,7 @@
 
 Provider balances, subscription quotas, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.2.0 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.3.0 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、管理 PAT 或上游原始响应发送到浏览器。
 
@@ -17,10 +17,11 @@ Provider balances, subscription quotas, and token-usage analytics for the DeepSe
 | | 能力 | 说明 |
 | --- | --- | --- |
 | 💳 | 统一账户卡片 | API 供应商显示余额，Token Plan 显示分窗口额度；面板一次只呈现当前供应商 |
+| 📈 | DeepSeek 平台用量 | 本月/今日消费、按模型、**按 API Key** 的 Token/请求/缓存命中/费用明细（需网页用量 Token）；每日用量与本地一致地按 **GMT+8** 展示，位于 Token 用量模块之前 |
 | 📊 | Token 用量分析 | 今日、本月、累计、缓存命中率、月历热图，以及按日期/供应商/模型下钻 |
 | 🔄 | 后台监测 | 服务端启动即刷新，之后每五分钟更新全部已配置账户与本地 Token 聚合 |
 | 🧩 | 可扩展适配器 | 支持 New API、Sub2API、通用余额模板，以及声明式 JSON Pointer 自定义查询 |
-| 🔒 | 本机安全边界 | 五个端点仅接受回环 GET；凭据只在服务端解析并发往校验后的供应商地址 |
+| 🔒 | 本机安全边界 | 六个端点仅接受回环 GET；凭据只在服务端解析并发往校验后的供应商地址 |
 
 界面支持中文和英文。浏览器只请求当前选择的 provider；后台刷新与面板是否打开无关。手动刷新会更新用量、供应商列表，并强制刷新当前账户，不会批量强制请求其他供应商。
 
@@ -91,6 +92,42 @@ npx --yes github:Ychris12138/dsh-usage-stats --no-enable
 ## 凭据与供应商配置 / Configuration
 
 凭据由 Harness 从 `~/.dsh/.credentials.yaml` 解析。安装器不会读取、创建或修改该文件。不要把真实 Key、Cookie 或管理令牌提交到 Git、公开 issue，或粘贴给编码 Agent。
+
+### DeepSeek 平台用量（余额之外的消费与 Token 明细）
+
+DeepSeek 官方只公开余额接口，没有账户级用量 API。插件移植了
+[DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)
+的方案：用量数据来自 `platform.deepseek.com` 的网页接口
+（`/api/v0/usage/amount` 与 `/api/v0/usage/cost`），需要**用量 Token**——
+它与 API Key 不同，是登录 platform.deepseek.com 后在控制台执行
+`JSON.parse(localStorage.userToken).value` 得到的会话凭据：
+
+```yaml
+# ~/.dsh/.credentials.yaml
+DEEPSEEK_API_KEY: sk-your-key-here      # 余额接口
+DEEPSEEK_USAGE_TOKEN: eyJ...            # 平台用量接口（localStorage.userToken）
+```
+
+用量 Token 会过期；查询失败时按上述方式重新获取即可。该 Token 只在服务端
+通过 credentials seam 解析，不会进入浏览器响应或插件缓存。自定义引用可在
+Cordis config 中设置 `usageTokenRef`。
+
+**也可以在界面里配置**：打开用量面板，点标题栏的 ⚙ 设置按钮（或平台用量
+区块未配置提示旁的“配置用量 Token”按钮），两种方式任选：
+
+- **方式一：网页登录自动同步**（推荐，移植自 DeepSeekMonitorWindows）——
+  点击后服务端拉起系统 Edge/Chrome 窗口打开 platform.deepseek.com，登录
+  成功后自动捕获、验证并保存用量 Token（复用 DSMW 的 fetch/XHR 钩子 +
+  `localStorage.userToken` 轮询），随后立即刷新平台用量并显示本月消费。
+  登录状态保存在 `~/.dsh/usage-stats/browser-profile`，下次同步无需重新登录。
+- **方式二：手动粘贴**——按页面指引在控制台执行
+  `JSON.parse(localStorage.userToken).value` 后粘贴保存。
+
+保存/清除后平台用量数据立即同步更新。Token 保存在
+`~/.dsh/storages/usage-stats-platform.json`（权限受限），服务端优先使用
+credentials 文件中的引用，其次才用面板保存的值。未配置时面板显示获取指引，
+不影响其余功能。自动同步依赖本机 Edge/Chrome（CDP，无新增 npm 依赖）；
+找不到浏览器时会提示改用方式二。
 
 ### 余额型供应商
 
@@ -205,9 +242,10 @@ Passion（provider id 为 `passion` 或域名为 `*.passionapi.com`）会自动�
 ## 使用 / Usage
 
 1. 点击侧边栏“用量/余额”。
-2. 用“当前供应商”切换账户卡片；一次只显示一个 provider。
-3. 使用 `‹` / `›` 切换月份，点击热图日期查看当天的 provider/model 明细。
-4. 标题栏刷新会更新 Token、provider 列表，并强制刷新当前账户。
+2. 「账户与用量」用“当前供应商”切换账户卡片；**选中 DeepSeek 时**，余额与平台用量合并为**同一张卡**（细分隔线连接）：余额 → 平台用量（月份切换、本月消费、今日消费、API 请求数与按模型明细）；选中其他供应商时仅显示其账户卡（余额或订阅额度）。
+3. 其下方的「Token 用量」显示今日/本月/累计与缓存命中率，月历热力图在平台用量配置后显示平台获取的每日用量（标题旁标注数据源），未配置时回退显示本地用量，点击日期可下钻当日模型明细；面板最末尾是**可折叠的「按 API Key」**明细（默认收起，可点击展开/收起）。
+4. 使用热图的 `‹` / `›` 切换月份，点击日期查看当天的 provider/model 明细。
+5. 标题栏刷新会更新 Token、provider 列表，并强制刷新当前账户与平台用量。
 
 “最近 14 天”按本地日历计算，只显示窗口内存在用量的日期；未来时间戳不会计入。同一模型来自不同 provider 时会分别统计，例如 `deepseek-official · deepseek-chat` 与 `ark · deepseek-chat`。
 
@@ -266,8 +304,9 @@ npx --yes github:Ychris12138/dsh-usage-stats --check
 - 自定义 monitor 默认要求 HTTPS、同源相对路径、手动 redirect 和 JSON 响应，body 上限为 1 MiB。
 - 发凭据前会校验域名的全部 IPv4/IPv6 解析结果并固定连接地址，防止 DNS rebinding 绕过私网限制。
 - `usageBaseURL` 禁止内嵌 username/password；`Authorization`、`X-API-Key`、`API-Key` 等 header 必须由 credential ref 注入。
-- 五个端点仅接受 GET，并同时校验 peer socket 与 Host；支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
+- 六个端点仅接受 GET，并同时校验 peer socket 与 Host；支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
 - 用量缓存 `~/.dsh/storages/usage-stats-cache.json` 只保存聚合 Token、会话 id、不透明 revision 与折叠游标，不保存提示词、回复或文件路径。
+- DeepSeek 平台用量 Token 只在服务端解析并用于请求 `platform.deepseek.com`，按月份在内存中缓存五分钟，不落盘、不出现在响应中。
 
 本机反向代理会让插件看到代理自身的回环地址。请勿把端点经反向代理暴露到局域网或公网；确需代理时必须在代理层增加可靠认证与访问控制。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
@@ -275,6 +314,7 @@ npx --yes github:Ychris12138/dsh-usage-stats --check
 
 统计值来自 `assistant/chunk` 或 `assistant/message` 中 provider-reported `usage`，不是本地估算。相同 turn/step 的后续样本会替换旧样本，并按 `provider/model` 归集。
 
+- **时区口径**：平台用量与本地会话用量统一按 **GMT+8** 展示。平台取数使用官网用量页同一套接口（`/api/v0/usage/by_api_key/amount|cost`，`start/end` 为 GMT+8 日的 epoch 秒、`tz=28800`），每日数据（`bucket=86400`）即 GMT+8 日；接口无小时/请求级数据，最细为“天 × API Key × 模型”。若该私有接口异常，自动回退旧的 `usage/amount|cost`（UTC 日）并保持面板可用（接口响应带 `source` 标记），此时平台日与本地 GMT+8 可能相差一天。
 - 活跃会话只处理新追加事件。
 - 持久化会话使用不透明 revision；未变化时不重复读取日志。
 - seq 缺口、日志重写或 live/persisted 切换时完整重折叠该会话。
@@ -290,8 +330,11 @@ npx --yes github:Ychris12138/dsh-usage-stats --check
 | `GET` | `/api/usage-stats/account?provider=<id>` | 当前 provider 的统一余额或 Token Plan 快照；`refresh=1` 强制刷新 |
 | `GET` | `/api/usage-stats/balance?provider=<id>` | `0.1.x` 余额兼容路由 |
 | `GET` | `/api/usage-stats/subscriptions` | `0.1.x` Token Plan 兼容路由 |
+| `GET` | `/api/usage-stats/platform?month=&year=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新 |
+| `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/token` | 用量 Token 设置（状态/保存/清除；Token 本身永不返回浏览器） |
+| `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/sync` | 网页登录自动同步（开始/状态/取消；按需拉起系统浏览器窗口） |
 
-非 GET 返回 `405`，非回环请求返回 `403`；所有响应均为 JSON 并带 `Cache-Control: no-cache`。
+非 GET 返回 `405`（token 路由允许 GET/POST/DELETE），非回环请求返回 `403`；所有响应均为 JSON 并带 `Cache-Control: no-cache`。
 
 ## 开发与验证 / Development
 
@@ -313,8 +356,9 @@ node scripts/check-balance.mjs
 
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.2.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。
+当前版本为 `0.4.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。
 
+- [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、`/api/v0/usage/amount` 与 `/usage/cost` 解析、7 天堆叠图与模型明细）。
 - [Javis603/token-monitor](https://github.com/Javis603/token-monitor)：参考多 provider 配额归一化与 Z.ai 限额解析。
 - [xiaoqi20/dsh-opencode-go-usage](https://github.com/xiaoqi20/dsh-opencode-go-usage)：参考 DSH 凭据接入、OpenCode `auth.json` 回退与 Bearer usage endpoint。
 
