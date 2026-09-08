@@ -28,6 +28,7 @@ globalThis.document = { querySelector: () => null, createElement: () => ({ datas
 const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "client.js"), "utf8");
 if (!source.includes("/api/usage-stats/account")) throw new Error("client must use the unified account endpoint");
 if (source.includes('fetchJson("/api/usage-stats/subscriptions")')) throw new Error("client must not bulk-fetch every subscription provider");
+if (!source.includes('closest(`.${S.panel}, .${S.badge}`)')) throw new Error("the panel must close on outside clicks (mousedown guard missing)");
 new Function(source)(); // executes the window.__ModuleLoader__.load call
 
 if (captured === null) throw new Error("loader did not capture the bundle");
