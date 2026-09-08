@@ -190,6 +190,40 @@ async function testRevisionRewrite(root) {
 	assert.equal(reads, 3, "rewrite detection must retry from seq 0");
 }
 
+/**
+ * Harness-version drift: dsh 0.1.2 removed the live session's `events` array
+ * getter in favour of `snapshotEvents(fromSeq, toSeqExclusive)` + `seq`. The
+ * aggregator must read both shapes, and one unreadable session must never
+ * fail the whole route (it used to 500 with "Cannot read properties of
+ * undefined (reading 'length')").
+ */
+async function testLiveSessionApiDrift(root) {
+	const plugin = await freshModule("drift", join(root, "drift"));
+	const log = [usageEvent(1, 5), usageEvent(2, 6)];
+	const modern = {
+		id: "modern-session",
+		seq: log.length,
+		snapshotEvents: (fromSeq = 0, toSeqExclusive = log.length) => log.slice(fromSeq, toSeqExclusive)
+	};
+	const legacy = { id: "legacy-session", events: [usageEvent(1, 4)] };
+	const opaque = { id: "opaque-session" }; // neither API shape
+	const sessions = { list: () => [modern, legacy, opaque] };
+	const ctx = makeContext({ sessions, persistence: {} });
+	const result = await plugin.collectUsage(ctx);
+	assert.equal(result.total.tokens, 15, "modern + legacy sessions must both fold; an opaque session must be skipped");
+
+	// Appending to the modern log must fold incrementally, not refold.
+	log.push(usageEvent(3, 9));
+	modern.seq = log.length;
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 24, "the modern session's appended events must be folded");
+
+	// A persistence backend exposing neither listSnapshots() nor list() must
+	// be skipped without failing the route.
+	const bare = makeContext({ sessions: { list: () => [] }, persistence: {} });
+	const bareResult = await plugin.collectUsage(bare);
+	assert.equal(bareResult.total.tokens, 0, "an unknown persistence surface must degrade to no persisted usage");
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
@@ -198,6 +232,7 @@ try {
 	await testBackgroundRefresh(root);
 	await testPersistedToLive(root);
 	await testRevisionRewrite(root);
+	await testLiveSessionApiDrift(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;

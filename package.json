@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-stats",
   "description": "Token usage heatmap, provider balances, and subscription quotas for the dsh web GUI",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "repository": {
     "type": "git",
@@ -43,7 +43,6 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
