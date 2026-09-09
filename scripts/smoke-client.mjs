@@ -27,7 +27,11 @@ globalThis.document = { querySelector: () => null, createElement: () => ({ datas
 
 const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "client.js"), "utf8");
 if (!source.includes("/api/usage-stats/account")) throw new Error("client must use the unified account endpoint");
-if (source.includes('fetchJson("/api/usage-stats/subscriptions")')) throw new Error("client must not bulk-fetch every subscription provider");
+// The server dropped the multi-provider/subscription endpoints: the client must
+// not call any of them.
+for (const endpoint of ["/api/usage-stats/providers", "/api/usage-stats/balance", "/api/usage-stats/subscriptions"]) {
+	if (source.includes(endpoint)) throw new Error(`client must not call the removed endpoint ${endpoint}`);
+}
 if (!source.includes('closest(`.${S.panel}, .${S.badge}`)')) throw new Error("the panel must close on outside clicks (mousedown guard missing)");
 new Function(source)(); // executes the window.__ModuleLoader__.load call
 
@@ -188,16 +192,18 @@ if (dayDetailLocal.includes("usage.cost") || dayDetailLocal.includes("platform.r
 if (dayDetailLocal.includes("usg_hourChart") || dayDetailLocal.includes("usg_dayKeys")) throw new Error("local day detail must hide the hourly chart and per-key rows");
 console.log("local day detail hides platform metrics ok");
 
-// Balance and subscription providers share one account-card frame. Only the
-// selected provider is rendered; the inner payload varies by account mode.
-const { ProviderAccountCard, buildProviderChoices } = exports_;
-const translateAccount = (key, params) => {
-	if (params?.value !== void 0) return `${key}:${params.value}`;
-	if (params?.refs !== void 0) return `${key}:${params.refs}`;
-	if (params?.ref !== void 0) return `${key}:${params.ref}`;
-	return key;
-};
-const deepseekMarkup = renderToStaticMarkup(react.createElement(ProviderAccountCard, {
+// The client is DeepSeek-only: the provider picker, the shared multi-provider
+// account frame and the subscription quota meters were removed, so their
+// symbols must no longer be exported and none of their UI strings may remain.
+for (const symbol of ["ProviderAccountCard", "ProviderPicker", "SubscriptionContent", "buildProviderChoices", "isDeepSeekProviderId", "quotaLabel", "resetLabel"]) {
+	if (Object.hasOwn(exports_, symbol)) throw new Error(`removed multi-provider export still present: ${symbol}`);
+}
+for (const fragment of ["usg_providerPicker", "usg_providerSelect", "usg_accountGrid", "usg_quotaTrack", "usg_quotaFill", "usg_quotaLabel", "subscription.", "account.provider", "balance.title", "data-provider=opencode-go", "data-provider=zai", "data-provider=openrouter", "data-provider=moonshotai", "data-provider=kimi"]) {
+	if (source.includes(fragment)) throw new Error(`removed multi-provider UI fragment still present: ${fragment}`);
+}
+// The merged DeepSeek card keeps the balance frame, the official whale mark and
+// the unified stats band. (Its full coverage continues further below.)
+const cardOnlyMarkup = renderToStaticMarkup(react.createElement(exports_.DeepSeekAccountUsageCard, {
 	provider: { id: "deepseek-official", displayName: "DeepSeek", accountMode: "balance" },
 	account: {
 		id: "deepseek-official",
@@ -208,54 +214,25 @@ const deepseekMarkup = renderToStaticMarkup(react.createElement(ProviderAccountC
 	},
 	accountLoading: false,
 	accountError: null,
-	translate: translateAccount,
-	onRetry: () => {}
+	platform: null,
+	platformLoading: false,
+	platformError: null,
+	month: "2026-08",
+	onMonthChange: () => {},
+	onRetry: () => {},
+	onRetryPlatform: () => {},
+	onConfigure: () => {},
+	localDayTokens: 1,
+	localMonthTokens: 2,
+	localTotalTokens: 3,
+	translate: (key) => key
 }));
-const goSubscription = {
-	id: "opencode-go",
-	displayName: "OpenCode Go",
-	status: "ok",
-	plan: "Go",
-	windows: [
-		{ kind: "session", usedPercent: 12, remainingPercent: 88, resetsAt: "2026-08-14T01:00:00Z" },
-		{ kind: "weekly", usedPercent: 34, remainingPercent: 66 },
-		{ kind: "monthly", usedPercent: 56, remainingPercent: 44 }
-	]
-};
-const goMarkup = renderToStaticMarkup(react.createElement(ProviderAccountCard, {
-	provider: { id: "opencode-go", displayName: "OpenCode Go", accountMode: "subscription", subscriptionId: "opencode-go" },
-	account: { ...goSubscription, mode: "subscription" },
-	accountLoading: false,
-	accountError: null,
-	translate: translateAccount,
-	onRetry: () => {}
-}));
-if (!deepseekMarkup.includes("usg_accountCard") || !goMarkup.includes("usg_accountCard")) throw new Error("both account modes must use the shared card frame");
-if (!deepseekMarkup.includes("data-account-mode=\"balance\"") || !deepseekMarkup.includes("DeepSeek") || deepseekMarkup.includes("progressbar")) throw new Error("DeepSeek must render only monetary balance data");
-if (!deepseekMarkup.includes("<svg") || !deepseekMarkup.includes("M26.5174")) throw new Error("the DeepSeek mark must be the official whale logo");
-if (deepseekMarkup.includes(">DS<")) throw new Error("the DS abbreviation must be replaced by the whale logo");
-if (!goMarkup.includes("data-account-mode=\"subscription\"") || !goMarkup.includes("OpenCode Go")) throw new Error("OpenCode Go must render the subscription account mode");
-if ((goMarkup.match(/role="progressbar"/g) ?? []).length !== 3 || !goMarkup.includes("width:12%")) throw new Error("OpenCode Go must render three quota meters");
-const invalidMarkup = renderToStaticMarkup(react.createElement(ProviderAccountCard, {
-	provider: { id: "minimax", displayName: "MiniMax", accountMode: "subscription" },
-	account: { id: "minimax", displayName: "MiniMax", mode: "subscription", status: "invalid-response", windows: [] },
-	accountLoading: false,
-	accountError: null,
-	translate: translateAccount,
-	onRetry: () => {}
-}));
-if (!invalidMarkup.includes("account.status.invalidResponse") || !invalidMarkup.includes("account.invalidResponse")) throw new Error("invalid account responses need a distinct status and explanation");
-
-const choices = buildProviderChoices([
-	{ id: "deepseek-official", displayName: "DeepSeek", adapter: "deepseek-balance", accountMode: "balance", configured: true },
-	{ id: "zai-coding-cn", displayName: "Z.ai CN", adapter: "zai-token-plan", accountMode: "subscription", configured: true },
-	{ id: "opencode-go", displayName: "OpenCode Go", adapter: "opencode-go", accountMode: "subscription", configured: true }
-]);
-if (choices.length !== 3) throw new Error(`provider metadata must remain one row per provider, got ${choices.length}`);
-if (choices.find((provider) => provider.id === "zai-coding-cn")?.accountMode !== "subscription") throw new Error("Z.ai must prefer its subscription presentation");
-const selectedMarkup = goMarkup;
-if (selectedMarkup.includes("DeepSeek") || selectedMarkup.includes("Z.ai")) throw new Error("the account area must render only the selected provider");
-console.log("unified single-provider account card ok, balance:", deepseekMarkup.length, "subscription:", goMarkup.length);
+if (!cardOnlyMarkup.includes("usg_accountCard") || !cardOnlyMarkup.includes("36.44") || !cardOnlyMarkup.includes("data-account-mode=\"balance\"")) throw new Error("the DeepSeek card must keep the balance frame");
+if (!cardOnlyMarkup.includes("<svg") || !cardOnlyMarkup.includes("M26.5174")) throw new Error("the DeepSeek mark must be the official whale logo");
+if (cardOnlyMarkup.includes(">DS<")) throw new Error("the DS abbreviation must be replaced by the whale logo");
+if (!cardOnlyMarkup.includes("usg_bandCompact") || !cardOnlyMarkup.includes("usage.totalTokens")) throw new Error("the DeepSeek card must keep the unified stats band");
+if (cardOnlyMarkup.includes("progressbar") || cardOnlyMarkup.includes("usg_quotaTrack")) throw new Error("the DeepSeek card must render balance only (no quota meters)");
+console.log("deepseek-only account card ok, markup length:", cardOnlyMarkup.length);
 
 // DeepSeek platform usage section: month stats and per-model rows only —
 // no heatmap (the platform daily heatmap was removed as incomplete).
@@ -399,10 +376,8 @@ const mergedNoPlatform = renderToStaticMarkup(react.createElement(DeepSeekAccoun
 if (mergedNoPlatform.includes("usage.bandSource")) throw new Error("the platform source note must hide without platform data");
 console.log("merged DeepSeek account+usage card ok");
 
-// The merged account module shows platform usage only for DeepSeek providers.
-const { isDeepSeekProviderId } = exports_;
-if (!isDeepSeekProviderId("deepseek-official") || !isDeepSeekProviderId("deepseek")) throw new Error("official DeepSeek routes must include platform usage");
-if (isDeepSeekProviderId("opencode-go") || isDeepSeekProviderId("zai") || isDeepSeekProviderId(null)) throw new Error("non-DeepSeek providers must not show platform usage");
+// The merged account module shows platform usage only for DeepSeek providers;
+// the removed provider guard no longer exists (asserted absent above).
 if (!platformMarkup.includes("platform.title")) throw new Error("the platform block must keep its small caption (no separate big title)");
 
 // The single heatmap consumes platform days through the local-shape mapper

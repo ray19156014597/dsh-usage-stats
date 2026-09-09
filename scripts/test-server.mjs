@@ -62,10 +62,9 @@ async function testRouteFence(root) {
 	await handler({ method: "HEAD", headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, head);
 	assert.equal(head.status, 405, "the endpoints are GET-only");
 
-	const subscriptions = makeResponse();
-	await routes.get(plugin.SUBSCRIPTIONS_PATH)({ method: "GET", url: plugin.SUBSCRIPTIONS_PATH, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, subscriptions);
-	assert.equal(subscriptions.status, 200);
-	assert.deepEqual(JSON.parse(subscriptions.body).subscriptions.map((provider) => provider.status), ["not-configured", "not-configured"]);
+	assert.equal(plugin.SUBSCRIPTIONS_PATH, void 0, "the multi-provider subscription route must be gone");
+	assert.equal(plugin.PROVIDERS_PATH, void 0, "the multi-provider providers route must be gone");
+	assert.equal(plugin.BALANCE_PATH, void 0, "the legacy balance route must be gone");
 
 	const account = makeResponse();
 	await routes.get(plugin.ACCOUNT_PATH)({ method: "GET", url: `${plugin.ACCOUNT_PATH}?provider=deepseek-official`, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, account);
@@ -75,8 +74,9 @@ async function testRouteFence(root) {
 
 async function testConfigValidation(root) {
 	const plugin = await freshModule("config", join(root, "config"));
-	assert.deepEqual(plugin.Config["~standard"].validate({ monitors: {} }).issues, void 0);
-	assert.match(plugin.Config["~standard"].validate({ monitors: { relay: { adapter: "missing" } } }).issues[0].message, /adapter is unsupported/);
+	assert.equal(plugin.Config["~standard"].validate({}).issues, void 0);
+	assert.equal(plugin.Config["~standard"].validate({ usageTokenRef: "DEEPSEEK_USAGE_TOKEN" }).issues, void 0);
+	assert.match(plugin.Config["~standard"].validate({ usageTokenRef: "" }).issues[0].message, /usageTokenRef/);
 	const routes = new Map();
 	const context = makeContext({
 		sessions: { list: () => [] },
@@ -84,40 +84,14 @@ async function testConfigValidation(root) {
 		routes,
 		settings: { get: () => void 0 }
 	});
-	await assert.rejects(
-		() => plugin.apply(context, { monitors: { missing: { adapter: "general" } } }, { disableBackgroundRefresh: true }),
-		/unknown provider: missing/
-	);
-	assert.equal(routes.size, 0, "invalid provider config must fail before routes are registered");
-}
-
-async function testLegacyZaiSubscriptionId(root) {
-	const plugin = await freshModule("legacy-zai", join(root, "legacy-zai"));
-	const routes = new Map();
-	const account = {
-		id: "zai-coding-cn",
-		displayName: "Z.ai CN",
-		mode: "subscription",
-		adapter: "zai-token-plan",
-		status: "ok",
-		windows: []
-	};
-	const accounts = {
-		validate: async () => {},
-		subscriptionAccounts: async () => [account],
-		providerViews: async () => [],
-		get: async () => null,
-		refreshAll: async () => []
-	};
-	await plugin.apply(makeContext({ sessions: { list: () => [] }, persistence: { listSnapshots: async () => [], list: async () => [] }, routes }), {}, {
-		disableBackgroundRefresh: true,
-		accounts
+	await plugin.apply(context, { usageTokenRef: "DEEPSEEK_USAGE_TOKEN" }, { disableBackgroundRefresh: true });
+	assert.equal(routes.size, 7, "the DeepSeek-only plugin must register exactly seven routes");
+	assert.deepEqual(await plugin.deepseekProvider(context), {
+		id: "deepseek-official",
+		displayName: "DeepSeek",
+		apiKeyEnv: "DEEPSEEK_API_KEY",
+		baseURL: "https://api.deepseek.com"
 	});
-	const response = makeResponse();
-	await routes.get(plugin.SUBSCRIPTIONS_PATH)({ method: "GET", url: plugin.SUBSCRIPTIONS_PATH, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, response);
-	const legacy = JSON.parse(response.body).subscriptions[0];
-	assert.equal(legacy.id, "zai", "0.1.x clients require the canonical Z.ai subscription id");
-	assert.equal(account.id, "zai-coding-cn", "legacy canonicalization must not mutate the account protocol");
 }
 
 async function testBackgroundRefresh(root) {
@@ -224,15 +198,61 @@ async function testLiveSessionApiDrift(root) {
 	assert.equal(bareResult.total.tokens, 0, "an unknown persistence surface must degrade to no persisted usage");
 }
 
+/**
+ * Persistence API drift: dsh 0.1.2 dropped `listSnapshots()` and
+ * `readFrom()`. `list()` now returns snapshots (`{ header, revision }`) and
+ * events are read through `open(id, "read")` + `handle.read(offset)`. A
+ * regression here silently hides all historical usage from the panel, so the
+ * modern shape is covered explicitly.
+ */
+async function testPersistedApiDrift(root) {
+	const plugin = await freshModule("persisted-drift", join(root, "persisted-drift"));
+	const id = "modern-persisted";
+	const log = [usageEvent(1, 5), usageEvent(2, 6)];
+	let closed = 0;
+	let offsetSeen = null;
+	const handle = {
+		id,
+		header: { id },
+		access: "read",
+		read: async (offset = 0) => {
+			offsetSeen = offset;
+			return { events: log.slice(offset), eventState: "shared" };
+		},
+		close: async () => { closed += 1; }
+	};
+	let revision = "rev-1";
+	const persistence = {
+		list: async () => [{ header: { id }, revision, sizeBytes: 128 }],
+		open: async (openedId, access) => {
+			assert.equal(openedId, id);
+			assert.equal(access, "read");
+			return handle;
+		}
+	};
+	const ctx = makeContext({ sessions: { list: () => [] }, persistence });
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 11, "list()+open()/read() must fold persisted sessions");
+	assert.equal(offsetSeen, 0, "the first fold must read from seq 0");
+	assert.equal(closed, 1, "the read handle must be closed");
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 11, "an unchanged revision must skip the re-read");
+	assert.equal(closed, 1);
+
+	revision = "rev-2";
+	log.push(usageEvent(3, 9));
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 20, "a new revision must fold only the appended tail");
+	assert.equal(offsetSeen, 2, "the incremental read must start at the last folded seq");
+	assert.equal(closed, 2);
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
 	await testConfigValidation(root);
-	await testLegacyZaiSubscriptionId(root);
 	await testBackgroundRefresh(root);
 	await testPersistedToLive(root);
 	await testRevisionRewrite(root);
 	await testLiveSessionApiDrift(root);
+	await testPersistedApiDrift(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;
