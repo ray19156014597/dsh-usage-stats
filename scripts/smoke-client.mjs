@@ -513,4 +513,63 @@ if (!cny.includes("36.44")) throw new Error(`unexpected CNY format: ${cny}`);
 if (fmtCurrency(void 0, "CNY") !== "—") throw new Error("missing amount must render em dash");
 if (fmtCurrency("9.9", "USD").includes("¥")) throw new Error("USD must not render as ¥");
 console.log("currency formatting ok:", cny);
+// ---- P0 interaction polish -------------------------------------------------
+// Motion: the panel must grow out of the sidebar badge and take long enough to be
+// perceived (the old 160ms/6px fade was invisible), and closing must animate out
+// before the node unmounts. The JS exit timer must match the stylesheet duration.
+const inMatch = source.match(/usg-panel-in (\d+)ms/);
+const outMatch = source.match(/usg-panel-out (\d+)ms/);
+if (inMatch === null) throw new Error("the panel must declare an entry animation duration");
+if (outMatch === null) throw new Error("the panel must declare an exit animation");
+if (Number(inMatch[1]) < 260) throw new Error(`entry animation must last at least 260ms, got ${inMatch[1]}ms`);
+if (Number(outMatch[1]) < 120 || Number(outMatch[1]) > Number(inMatch[1])) {
+	throw new Error(`exit (${outMatch[1]}ms) must be faster than entry (${inMatch[1]}ms)`);
+}
+const exitConst = source.match(/PANEL_EXIT_MS = (\d+)/);
+if (exitConst === null || Number(exitConst[1]) !== Number(outMatch[1])) {
+	throw new Error(`PANEL_EXIT_MS must mirror the usg-panel-out duration (${outMatch[1]}ms)`);
+}
+for (const fragment of ["usg-panel-out", "data-closing", "transform-origin:left bottom", "animation:usg-body-in", "prefers-reduced-motion:reduce"]) {
+	if (!source.includes(fragment)) throw new Error(`missing motion contract: ${fragment}`);
+}
+if (!/"Escape"/.test(source)) throw new Error("the panel must close (or step back) on Escape");
+if (!source.includes('translate("action.refreshing")') || !source.includes('"data-busy"')) {
+	throw new Error("the refresh control must expose a busy state");
+}
+if (!source.includes("usg-spin")) throw new Error("the busy refresh icon must spin");
+if (!source.includes("UsageSkeleton") || !source.includes("usg_skelGrid")) throw new Error("first paint must use the usage skeleton");
+if (!source.includes("usg_errorText")) throw new Error("long error messages must be clamped to a compact block");
+if (!source.includes('"action.refreshing": "刷新中…"') || !source.includes('"action.refreshing": "Refreshing…"')) {
+	throw new Error("action.refreshing must exist in both dictionaries");
+}
+for (const fragment of ["usg_headerHint", "data-kind=close", "aspect-ratio:1/1;border-radius:7px"]) {
+	if (!source.includes(fragment)) throw new Error(`missing P0 style: ${fragment}`);
+}
+console.log("P0 interaction polish contract ok (motion", `${inMatch[1]}ms in / ${outMatch[1]}ms out)`);
+
+// Theme follow: the heatmap scale must key off the DSH theme snapshot, because the
+// GUI preference can differ from the OS color scheme (OS dark + GUI light etc.).
+const { resolveColorScheme, createThemeBridge, prefersReducedMotion } = exports_;
+const bridgeOf = (scheme) => ({ scheme: () => scheme });
+if (resolveColorScheme(bridgeOf("light")) !== "light") throw new Error("a light theme snapshot must win over the OS scheme");
+if (resolveColorScheme(bridgeOf("dark")) !== "dark") throw new Error("a dark theme snapshot must win over the OS scheme");
+if (resolveColorScheme(bridgeOf(null)) !== "light") throw new Error("no snapshot must fall back to the media query (node: no matchMedia → light)");
+if (resolveColorScheme(void 0) !== "light") throw new Error("a missing bridge must fall back to the media query");
+const boundEvents = [];
+const bridge = createThemeBridge({
+	get: (key) => (key === "theme" ? { getTheme: () => ({ active: { colorScheme: "dark" } }) } : void 0),
+	on: (name, listener) => { boundEvents.push([name, listener]); return () => {}; }
+});
+if (bridge.scheme() !== "dark") throw new Error("the bridge must read ctx.get('theme').getTheme().active.colorScheme");
+const listener = () => {};
+bridge.subscribe(listener);
+if (boundEvents.length !== 1 || boundEvents[0][0] !== "theme/change" || boundEvents[0][1] !== listener) {
+	throw new Error(`the bridge must subscribe to theme/change, got ${JSON.stringify(boundEvents.map((e) => e[0]))}`);
+}
+const bareBridge = createThemeBridge({});
+if (bareBridge.scheme() !== null) throw new Error("a context without services must resolve to null (media-query fallback)");
+if (typeof bareBridge.subscribe(listener) !== "function") throw new Error("subscribe must always return a disposer");
+if (typeof prefersReducedMotion() !== "boolean") throw new Error("prefersReducedMotion must return a boolean without matchMedia");
+console.log("theme bridge ok (snapshot wins, media query is the fallback)");
+
 console.log("SMOKE TEST PASSED");

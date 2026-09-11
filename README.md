@@ -8,7 +8,7 @@
 
 DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.5.1 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.6.0 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、用量 Token 或上游原始响应发送到浏览器。
 
@@ -34,9 +34,10 @@ DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Har
 | 📈 | DeepSeek 平台用量 | 本月/今日消费、按模型、**按 API Key** 的 Token/请求/缓存命中/费用明细（需网页用量 Token）；每日用量与本地一致地按 **GMT+8** 展示，位于 Token 用量模块之前 |
 | 📊 | Token 用量分析 | 今日、本月、累计、缓存命中率、月历热图，以及按日期/模型下钻 |
 | 🔄 | 后台刷新 | 服务端启动即刷新，之后每五分钟更新余额与本地 Token 聚合 |
+| ⌨️ | 顺手交互 | 面板自徽标处展开、关闭带退场动效；`Esc` 逐级返回；刷新按钮转圈并把“更新于 hh:mm”换成“刷新中…”；首屏加载用骨架占位；浅色/深色跟随 Harness 主题偏好 |
 | 🔒 | 本机安全边界 | 七个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
 
-界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。手动刷新会更新 Token 用量、余额与平台用量。
+界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。手动刷新会更新 Token 用量、余额与平台用量。动效遵守系统的“减少动态效果”设置，键盘焦点环与 ARIA 标签齐备。
 
 ## 快速安装 / Quick start
 
@@ -250,7 +251,7 @@ node scripts/check-balance.mjs
 
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.5.1`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。
+当前版本为 `0.6.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
 
 - [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、平台用量接口解析与模型明细）。
 

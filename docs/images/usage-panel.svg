@@ -139,7 +139,7 @@
   <!-- Release callouts -->
   <g transform="translate(922 126)">
     <rect x="0" y="0" width="112" height="30" rx="15" fill="#e7efff"/>
-    <text x="56" y="20" text-anchor="middle" fill="#2468db" font-size="12" font-weight="750">v0.5.1</text>
+    <text x="56" y="20" text-anchor="middle" fill="#2468db" font-size="12" font-weight="750">v0.6.0</text>
     <text x="0" y="78" font-size="38" font-weight="800">一个面板，</text>
     <text x="0" y="124" font-size="38" font-weight="800">看清 DeepSeek 用量</text>
     <text x="0" y="166" font-size="16" class="muted">余额、平台用量与 Token 用量统一呈现。</text>
