@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
 	ACCOUNT_REFRESH_MS,
+	assertTargetPolicy,
 	createAccountService,
 	isPrivateAddress,
+	isProxyPlaceholderAddress,
 	queryAccount,
 	validateAccountConfig
 } from "../lib/accounts.js";
@@ -67,6 +69,21 @@ assert.equal(isPrivateAddress("2002:7f00:1::"), true);
 assert.equal(isPrivateAddress("2606:4700:4700::1111"), false);
 assert.equal(isPrivateAddress("api.deepseek.com"), false, "a hostname is not an address");
 console.log("IPv4/IPv6 private-address classification ok");
+
+// The local-proxy fake-ip range stays classified as non-public (it is not
+// routable), but it is recognised separately so a hostname answered with a
+// placeholder is not mistaken for an SSRF target.
+assert.equal(isPrivateAddress("198.18.0.5"), true, "a fake-ip placeholder is still not a public address");
+assert.equal(isProxyPlaceholderAddress("198.18.0.5"), true);
+assert.equal(isProxyPlaceholderAddress("198.19.255.254"), true);
+assert.equal(isProxyPlaceholderAddress("198.20.0.1"), false, "the allowance must stop at 198.18.0.0/15");
+assert.equal(isProxyPlaceholderAddress("198.17.255.255"), false);
+assert.equal(isProxyPlaceholderAddress("10.0.0.7"), false);
+assert.equal(isProxyPlaceholderAddress("::ffff:198.18.0.5"), true, "the IPv4-mapped form must classify identically");
+assert.equal(isProxyPlaceholderAddress("::ffff:198.20.0.5"), false);
+assert.equal(isProxyPlaceholderAddress("2606:4700:4700::1111"), false);
+assert.equal(isProxyPlaceholderAddress("api.deepseek.com"), false);
+console.log("local-proxy fake-ip placeholder classification ok");
 
 //#endregion
 
@@ -171,11 +188,49 @@ console.log("DeepSeek-only config validation ok");
 		...noFetch,
 		lookup: async () => [{ address: "10.0.0.7", family: 4 }]
 	});
-	assert.equal(dnsPrivate.status, "unsupported", "a hostname resolving to a private address must be refused");
+	// Environment condition, not a configuration error: `unavailable` is
+	// transient, so a previously fetched balance is retained and the card
+	// reports the address instead of blanking out.
+	assert.equal(dnsPrivate.status, "unavailable", "a hostname resolving to a private address must not be queried");
+	assert.equal(dnsPrivate.policyReason, "private-network");
+	assert.equal(dnsPrivate.resolvedAddress, "10.0.0.7");
+	assert.equal(dnsPrivate.balance, null);
 
 	const credentialsInUrl = await queryAccount(credentials({ DEEPSEEK_API_KEY: KEY }), { ...noFetch, baseURL: "https://user:pass@api.deepseek.com" });
 	assert.equal(credentialsInUrl.status, "unsupported", "a URL carrying credentials must be refused");
+	assert.equal(credentialsInUrl.policyReason, "credentials-in-url");
 	console.log("pinned-transport policy rejections ok");
+}
+
+{
+	// Local-proxy fake-ip DNS (Clash/Mihomo/Surge/iKuuu style) answers every
+	// query with 198.18.0.0/15 and routes by SNI. Refusing it made the balance
+	// appear and disappear with the VPN state, so the placeholder must be
+	// accepted and pinned like a normal validated answer.
+	const target = await assertTargetPolicy("https://api.deepseek.com/user/balance", {
+		lookup: async () => [{ address: "198.18.0.5", family: 4 }]
+	});
+	assert.equal(target.address, "198.18.0.5", "a fake-ip answer must be pinned, not rejected");
+	assert.equal(target.url.hostname, "api.deepseek.com");
+
+	const requested = [];
+	await assertTargetPolicy("https://api.deepseek.com/user/balance", {
+		lookup: async (hostname, options) => {
+			requested.push([hostname, options]);
+			return [{ address: "198.18.0.5", family: 4 }];
+		}
+	});
+	assert.deepEqual(requested, [["api.deepseek.com", { all: true, verbatim: true }]]);
+
+	const mixed = await assertTargetPolicy("https://api.deepseek.com/user/balance", {
+		lookup: async () => [{ address: "198.18.0.5", family: 4 }, { address: "10.0.0.7", family: 4 }]
+	}).then(() => "accepted", (error) => error.providerStatus);
+	assert.equal(mixed, "unavailable", "a genuine private address in the same answer must still be refused");
+
+	const literalPlaceholder = await assertTargetPolicy("https://198.18.0.5/user/balance", {})
+		.then(() => "accepted", (error) => error.policyReason);
+	assert.equal(literalPlaceholder, "private-host", "a literal fake-ip address in the configuration stays refused");
+	console.log("local-proxy fake-ip answers accepted and pinned ok");
 }
 
 //#endregion
