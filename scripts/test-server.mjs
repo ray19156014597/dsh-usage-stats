@@ -244,6 +244,44 @@ async function testPersistedApiDrift(root) {
 	assert.equal(closed, 2);
 }
 
+/**
+ * The rendered usage snapshot is reused inside one polling window, so the panel's
+ * first-open fan-out (usage + account + three platform calls) and a second browser
+ * tab cannot stack full folds. `refresh=1` — what the panel's ↻ button sends — must
+ * bypass the reuse so a manual refresh still recomputes.
+ */
+async function testUsageSnapshotReuse(root) {
+	const plugin = await freshModule("snapshot", join(root, "snapshot"));
+	let lists = 0;
+	const persistence = { list: async () => { lists += 1; return []; } };
+	const ctx = makeContext({ sessions: { list: () => [] }, persistence });
+
+	const first = await plugin.readUsageSnapshot(ctx);
+	assert.equal(lists, 1, "the first read must fold");
+	const second = await plugin.readUsageSnapshot(ctx);
+	assert.equal(lists, 1, "a second read inside the TTL window must reuse the snapshot");
+	assert.equal(second, first, "the reused snapshot must be the same object");
+
+	await plugin.readUsageSnapshot(ctx, true);
+	assert.equal(lists, 2, "force must bypass the snapshot cache");
+
+	const routes = new Map();
+	await plugin.apply(makeContext({ sessions: { list: () => [] }, persistence, routes }), {}, { disableBackgroundRefresh: true });
+	const handler = routes.get(plugin.USAGE_PATH);
+	const request = (url) => ({ method: "GET", url, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } });
+
+	const cached = makeResponse();
+	await handler(request(plugin.USAGE_PATH), cached);
+	assert.equal(cached.status, 200);
+	assert.equal(lists, 2, "a route read inside the window must not fold again");
+
+	const forced = makeResponse();
+	await handler(request(`${plugin.USAGE_PATH}?refresh=1`), forced);
+	assert.equal(forced.status, 200);
+	assert.equal(lists, 3, "?refresh=1 must bypass the snapshot cache");
+	assert.equal(JSON.parse(forced.body).ok, true);
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
@@ -253,6 +291,7 @@ try {
 	await testRevisionRewrite(root);
 	await testLiveSessionApiDrift(root);
 	await testPersistedApiDrift(root);
+	await testUsageSnapshotReuse(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;

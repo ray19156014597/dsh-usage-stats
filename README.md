@@ -8,7 +8,7 @@
 
 DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.6.0 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.7.0 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、用量 Token 或上游原始响应发送到浏览器。
 
@@ -33,11 +33,14 @@ DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Har
 | 💳 | 账户卡片 | DeepSeek 余额与平台用量合并为**同一张卡**，一次呈现账户全貌 |
 | 📈 | DeepSeek 平台用量 | 本月/今日消费、按模型、**按 API Key** 的 Token/请求/缓存命中/费用明细（需网页用量 Token）；每日用量与本地一致地按 **GMT+8** 展示，位于 Token 用量模块之前 |
 | 📊 | Token 用量分析 | 今日、本月、累计、缓存命中率、月历热图，以及按日期/模型下钻 |
-| 🔄 | 后台刷新 | 服务端启动即刷新，之后每五分钟更新余额与本地 Token 聚合 |
-| ⌨️ | 顺手交互 | 面板自徽标处展开、关闭带退场动效；`Esc` 逐级返回；刷新按钮转圈并把“更新于 hh:mm”换成“刷新中…”；首屏加载用骨架占位；浅色/深色跟随 Harness 主题偏好 |
+| 🔄 | 后台刷新 | 服务端启动即刷新，之后每五分钟更新余额与本地 Token 聚合；聚合结果在 60 秒窗口内复用，多个面板/标签页不会重复折叠 |
+| 🧊 | 毛玻璃材质 | 每档表面 = 底色 + 白色罩面 + 顶边镜面高光 + 左上角光晕，面板再叠一层极细颗粒 —— 纯色背景上也能看出"玻璃"而不是半透明色块；四级阶梯（面板 < 卡片 < 内嵌块 < 浮层，越里越实），浅色/深色各一套模糊与描边参数；面板底色 48%（浅色 62%）保持通透；只有真正压在页面内容上的面板与 tooltip 才用 `backdrop-filter`（其余表面不再重复合成）；不支持该属性或开启“减少透明度”时自动退回接近不透明的表面 |
+| 📐 | 固定显示比例 | 面板在各显示器上保持同一尺寸（440px 宽、最高 74vh），不随屏幕大小放大缩小，只保留“窄窗口不溢出”的兜底；布局随内容自适应：折叠态一屏放下，展开态才滚动 |
+| ⌨️ | 顺手交互 | **首屏一屏放下**：余额 + 6 格统计 + 当月日历，最近 14 天/平台模型/按 API Key 折叠在下方；侧边栏渲染即预热数据，首次打开直接出热力图；面板自徽标处展开、关闭带退场动效；下钻视图带方向推入，`Esc` 逐级返回；刷新按钮转圈并把“更新于 hh:mm”换成“刷新中…”（右上角三个图标不带悬浮气泡，语义由 `aria-label` 承载）；热力图格子用面板自绘 tooltip，支持**方向键/Home/End/PageUp/PageDown** 在日历里移动，整块日历只占一个 Tab 停靠点 |
+| 🎨 | 语义化配色 | 消费走琥珀、Token 走蓝、缓存命中走青绿：6 格统计条按类别着色，日详情的环形图与占比条用同一套令牌（不再是“一片蓝”） |
 | 🔒 | 本机安全边界 | 七个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
 
-界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。手动刷新会更新 Token 用量、余额与平台用量。动效遵守系统的“减少动态效果”设置，键盘焦点环与 ARIA 标签齐备。
+界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。侧边栏一渲染就会静默预热账户、Token 聚合与平台用量，所以面板首次打开即可显示完整内容；若在预热完成前打开，才短暂显示骨架占位。手动刷新会强制服务端重新聚合 Token 用量，并更新余额与平台用量。动效遵守系统的“减少动态效果”设置；小时用量图与环形图附带读屏摘要，余额与“更新于”通过 `aria-live` 播报。
 
 ## 快速安装 / Quick start
 
@@ -221,7 +224,7 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `GET` | `/api/usage-stats/usage` | 按日期/provider/model 聚合的 Token 与缓存命中率 |
+| `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合 |
 | `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游 |
 | `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新 |
 | `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量；`refresh=1` 强制刷新 |
@@ -251,7 +254,7 @@ node scripts/check-balance.mjs
 
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.6.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
+当前版本为 `0.7.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
 
 - [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、平台用量接口解析与模型明细）。
 

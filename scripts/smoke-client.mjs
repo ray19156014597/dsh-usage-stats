@@ -521,15 +521,19 @@ const inMatch = source.match(/usg-panel-in (\d+)ms/);
 const outMatch = source.match(/usg-panel-out (\d+)ms/);
 if (inMatch === null) throw new Error("the panel must declare an entry animation duration");
 if (outMatch === null) throw new Error("the panel must declare an exit animation");
-if (Number(inMatch[1]) < 260) throw new Error(`entry animation must last at least 260ms, got ${inMatch[1]}ms`);
-if (Number(outMatch[1]) < 120 || Number(outMatch[1]) > Number(inMatch[1])) {
-	throw new Error(`exit (${outMatch[1]}ms) must be faster than entry (${inMatch[1]}ms)`);
+if (Number(inMatch[1]) < 340) throw new Error(`entry animation must last at least 340ms, got ${inMatch[1]}ms`);
+if (Number(outMatch[1]) < 160 || Number(outMatch[1]) > Number(inMatch[1])) {
+	throw new Error(`exit (${outMatch[1]}ms) must be shorter than entry (${inMatch[1]}ms) but still visible`);
+}
+const bodyMatch = source.match(/usg-body-in (\d+)ms/);
+if (bodyMatch === null || Number(bodyMatch[1]) < Number(inMatch[1])) {
+	throw new Error("the body fade must not finish before the panel frame settles");
 }
 const exitConst = source.match(/PANEL_EXIT_MS = (\d+)/);
 if (exitConst === null || Number(exitConst[1]) !== Number(outMatch[1])) {
 	throw new Error(`PANEL_EXIT_MS must mirror the usg-panel-out duration (${outMatch[1]}ms)`);
 }
-for (const fragment of ["usg-panel-out", "data-closing", "transform-origin:left bottom", "animation:usg-body-in", "prefers-reduced-motion:reduce"]) {
+for (const fragment of ["usg-panel-out", "data-closing", "transform-origin:left bottom", "animation:usg-body-in", "prefers-reduced-motion:reduce", "translateY(18px) scale(.94)"]) {
 	if (!source.includes(fragment)) throw new Error(`missing motion contract: ${fragment}`);
 }
 if (!/"Escape"/.test(source)) throw new Error("the panel must close (or step back) on Escape");
@@ -542,7 +546,7 @@ if (!source.includes("usg_errorText")) throw new Error("long error messages must
 if (!source.includes('"action.refreshing": "刷新中…"') || !source.includes('"action.refreshing": "Refreshing…"')) {
 	throw new Error("action.refreshing must exist in both dictionaries");
 }
-for (const fragment of ["usg_headerHint", "data-kind=close", "aspect-ratio:1/1;border-radius:7px"]) {
+for (const fragment of ["usg_headerHint", "data-kind=close", "aspect-ratio:1/1;border-radius:8px"]) {
 	if (!source.includes(fragment)) throw new Error(`missing P0 style: ${fragment}`);
 }
 console.log("P0 interaction polish contract ok (motion", `${inMatch[1]}ms in / ${outMatch[1]}ms out)`);
@@ -571,5 +575,123 @@ if (bareBridge.scheme() !== null) throw new Error("a context without services mu
 if (typeof bareBridge.subscribe(listener) !== "function") throw new Error("subscribe must always return a disposer");
 if (typeof prefersReducedMotion() !== "boolean") throw new Error("prefersReducedMotion must return a boolean without matchMedia");
 console.log("theme bridge ok (snapshot wins, media query is the fallback)");
+
+// ---- P1 interaction depth --------------------------------------------------
+// View transitions: drilling into the day detail / settings slides in from the
+// right, returning slides in from the left, and the container is re-keyed so the
+// animation replays (which also resets the scroll position).
+for (const fragment of ["usg_body[data-dir=forward]", "usg_body[data-dir=back]", "usg-view-forward", "usg-view-back", '"data-dir": viewDir || void 0', "key: view"]) {
+	if (!source.includes(fragment)) throw new Error(`missing view-transition contract: ${fragment}`);
+}
+// Focus management: the panel takes focus when it opens, the view container when
+// the view changes, and focus returns to the badge only if it was inside the panel.
+for (const fragment of ["panelRef.current?.focus?.({ preventScroll: true })", "bodyRef.current?.focus?.({ preventScroll: true })", "badgeRef.current?.focus?.({ preventScroll: true })", "panel.contains(active)", "ref: panelRef", "ref: badgeRef"]) {
+	if (!source.includes(fragment)) throw new Error(`missing focus-management contract: ${fragment}`);
+}
+if (!source.includes("preventScroll")) throw new Error("programmatic focus must not scroll the page");
+// In-panel tooltip replaces the native title attribute on heatmap cells.
+if (!source.includes("usg_tip") || !source.includes('role: "tooltip"') || !source.includes("hoverTip")) {
+	throw new Error("the heatmap must use the in-panel tooltip");
+}
+if (source.includes("title: `${cell.key}")) throw new Error("heatmap cells must not keep the native title tooltip");
+if (!source.includes('"usage.monthTokensFor"') || !source.includes('"usage.monthTokensFor": "{month} Tokens"') || !source.includes('"usage.monthTokensFor": "{month} tokens"')) {
+	throw new Error("the band label must be able to follow the viewed month (both dictionaries)");
+}
+if (!source.includes("onMouseEnter: wide ? void 0 :")) throw new Error("the collapsed (rail) badge must expose the today-token hint");
+console.log("P1 interaction contract ok (view transitions, focus, tooltip, month label)");
+
+// Cells keep an accessible label but drop the OS-styled title tooltip.
+const tippedHeat = renderToStaticMarkup(react.createElement(MonthHeatmap, {
+	heat: platformHeat,
+	translate: (key) => key,
+	selectedKey: null,
+	onSelect: () => {},
+	currency: "CNY",
+	hoverTip: { show: () => {}, hide: () => {} }
+}));
+if (tippedHeat.includes("title=")) throw new Error("heatmap cells must not render a native title attribute");
+if (!tippedHeat.includes("aria-label")) throw new Error("heatmap cells must stay labelled for assistive tech");
+if (!tippedHeat.includes("tokens")) throw new Error("the accessible label must keep the token count");
+console.log("heatmap tooltip swap ok (title → aria-label + in-panel tip)");
+
+// ---- P2：材质阶梯 / 语义色 / 令牌收敛 / 分层 / 无障碍 --------------------------
+// 玻璃配方：每档 = 底色 + 白色罩面（veil），且越靠里的表面越实。
+const ladderPattern = /--usg-mat-1:(\d+)%;--usg-mat-1-veil:[^;]+;--usg-mat-2:(\d+)%;--usg-mat-2-veil:[^;]+;--usg-mat-3:(\d+)%;--usg-mat-3-veil:[^;]+;--usg-mat-4:(\d+)%;/;
+const ladders = [...source.matchAll(new RegExp(ladderPattern, "g"))];
+if (ladders.length !== 3) throw new Error(`expected the dark ladder + both light copies (media query + data-usg-scheme), found ${ladders.length}`);
+for (const ladder of ladders) {
+	const fills = [1, 2, 3, 4].map((index) => Number(ladder[index]));
+	if (!(fills[0] < fills[1] && fills[1] < fills[2] && fills[2] < fills[3])) {
+		throw new Error(`the material ladder must get more opaque inwards, got ${fills.join(" < ")}`);
+	}
+}
+for (const fragment of ["--usg-mat-grain:url(", "feTurbulence", "var(--usg-mat-1-veil)", "var(--usg-mat-3-veil)", "var(--usg-mat-blur-1)", "--usg-mat-shadow"]) {
+	if (!source.includes(fragment)) throw new Error(`missing material token: ${fragment}`);
+}
+// 固定显示比例：面板尺寸不随屏幕大小变化（用户要求"固定比例、各屏一致"），
+// 只保留窄窗口不溢出的兜底；不得再出现按视口放大或整体 zoom 的写法。
+for (const fragment of ["width:440px;max-width:calc(100vw - 24px);max-height:74vh"]) {
+	if (!source.includes(fragment)) throw new Error(`missing fixed-size contract: ${fragment}`);
+}
+for (const gone of ["26vw", "zoom:var(--usg-fs)", "--usg-fs"]) {
+	if (source.includes(gone)) throw new Error(`viewport-driven scaling must be gone: ${gone}`);
+}
+// 面板 + tooltip 各一条规则（含 -webkit- 前缀共 4 处）；卡片与内嵌块不再二次模糊。
+const blurUses = (source.match(/backdrop-filter:blur\(var\(--usg-mat/g) ?? []).length;
+if (blurUses !== 4) throw new Error(`backdrop-filter must stay on exactly two surfaces (panel + tooltip), found ${blurUses} declarations`);
+if (!source.includes("@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)))")) {
+	throw new Error("the glass surfaces need a no-backdrop-filter fallback");
+}
+if (!source.includes("prefers-reduced-transparency:reduce")) throw new Error("reduced-transparency must be honoured");
+// 右上角三个图标不再挂 DSH Tooltip（在固定定位的面板里会飘到热力图上方）。
+if (source.includes("primitives.Tooltip")) throw new Error("the header icons must not use the primitives tooltip");
+console.log("material ladder ok:", ladders.length, "recipes,", blurUses / 2, "blurred surfaces (panel + tooltip)");
+
+// 死代码清掉；圆角/字重收敛（面板 16 / 卡片 12 / 控件 8，字重只留 600·700）。
+for (const gone of ["usg_balanceCard", "card-strong", "border-radius:18px", "border-radius:14px", "font-weight:550", "font-weight:650"]) {
+	if (source.includes(gone)) throw new Error(`dead or unconverged style still present: ${gone}`);
+}
+if (!source.includes("border-radius:16px") || !source.includes("border-radius:12px")) {
+	throw new Error("the radius ladder (16 / 12 / 8) must be present");
+}
+console.log("token convergence ok (radius 16/12/8, weights 600/700, dead code gone)");
+
+// 语义色：消费/用量/缓存三色令牌 + 统计格分类 + 构成色改走令牌。
+for (const fragment of ["--usg-cost:#F0A64B", "--usg-token:#6E8BFF", "--usg-cache:#35C46A", "--usg-cost:#B4650F", '"data-kind": "cost"', '"data-kind": "token"', 'COMP_COLORS = { hit: "var(--usg-cache)"']) {
+	if (!source.includes(fragment)) throw new Error(`missing semantic colour contract: ${fragment}`);
+}
+console.log("semantic colours ok (cost / token / cache tokens, COMP_COLORS on tokens)");
+
+// A1 分层：最近 14 天与平台明细默认折叠，首屏只留账户卡 + 热力图。
+for (const fragment of ["setRecentOpen", "setPlatformOpen", '"platform.modelsTitle"', '"aria-expanded": recentOpen', '"aria-expanded": platformOpen']) {
+	if (!source.includes(fragment)) throw new Error(`missing A1 disclosure contract: ${fragment}`);
+}
+if (!source.includes("localDayTokens === null")) throw new Error("a past month must render — for today's tokens instead of 0");
+if (!source.includes('"token.unsaved": "输入还没保存') || !source.includes('"token.unsaved": "Unsaved input')) {
+	throw new Error("the unsaved-input hint must exist in both dictionaries");
+}
+console.log("A1 layering ok (two collapsed disclosures, past-month dash, unsaved hint)");
+
+// B1：日历只占一个 Tab 停靠点（roving tabindex），方向键/Home/End 在日期间移动。
+for (const fragment of ["tabIndex: cell.key === focusKey ? 0 : -1", "onCellKeyDown", "ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7", 'event.key === "Home" || event.key === "End"', "const position = positions.get(key)", "onMonthStep"]) {
+	if (!source.includes(fragment)) throw new Error(`missing keyboard-grid contract: ${fragment}`);
+}
+const rovingMarkup = renderToStaticMarkup(react.createElement(MonthHeatmap, {
+	heat,
+	translate: (key) => key,
+	selectedKey: null,
+	onSelect: () => {},
+	today: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+}));
+const tabbable = (rovingMarkup.match(/tabindex="0"/g) ?? []).length;
+if (tabbable !== 1) throw new Error(`the heatmap must expose exactly one tab stop, got ${tabbable}`);
+console.log("keyboard grid ok (1 tab stop + arrow keys, Home/End, PageUp/PageDown)");
+
+// B2：读屏替代 —— 小时图给摘要、余额与"更新于"用 status 播报。
+for (const fragment of ['role: "img"', '"usage.hourSummary"', '"usage.ringLabel"', 'role: "status"', '"aria-live": "polite"']) {
+	if (!source.includes(fragment)) throw new Error(`missing a11y contract: ${fragment}`);
+}
+// B3：平台区与日详情都有骨架，不再只靠一行文字。
+if (!source.includes("detailLoading") || !source.includes("platform-skel-")) throw new Error("loading skeletons must cover the platform block and the day detail");
 
 console.log("SMOKE TEST PASSED");
