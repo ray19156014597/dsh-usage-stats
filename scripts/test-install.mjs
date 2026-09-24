@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -10,13 +10,17 @@ const installer = fileURLToPath(new URL("./install.mjs", import.meta.url));
 const patchPath = join(home, "profiles", "web", "cordis.patch.yml");
 const pluginEntry = /^\s+name:\s*dsh-usage-stats\s*$/gm;
 
-function run(...args) {
+function runWith(homeDir, ...args) {
 	const result = spawnSync(process.execPath, [installer, ...args], {
-		env: { ...process.env, DSH_HOME: home },
+		env: { ...process.env, DSH_HOME: homeDir },
 		encoding: "utf8"
 	});
 	assert.equal(result.status, 0, result.stderr || result.stdout);
 	return result.stdout;
+}
+
+function run(...args) {
+	return runWith(home, ...args);
 }
 
 function runFailure(...args) {
@@ -98,6 +102,60 @@ try {
 		/^\s+name:\s*dsh-usage-stats\s*$/m
 	);
 	assert.equal(await readFile(join(home, "profiles", "node_modules", "dsh-usage-stats", "lib", "index.js"), "utf8").then((text) => text.length > 1000), true);
+
+	// dsh >= 0.1.7: the profile is a pnpm project, so the plugin must become a
+	// bundle (profiles/web/node_modules + dsh.profile.bundles) instead of a copy
+	// under profiles/node_modules plus a user-patch insert. A leftover insert
+	// would mount the same entry id twice and must be dropped.
+	const modern = await mkdtemp(join(tmpdir(), "dsh-usage-stats-profile-"));
+	try {
+		const modernManifest = join(modern, "profiles", "web", "package.json");
+		const modernPatch = join(modern, "profiles", "web", "cordis.patch.yml");
+		await mkdir(dirname(modernManifest), { recursive: true });
+		await writeFile(modernManifest, `${JSON.stringify({
+			name: "dsh-profile-web",
+			private: true,
+			dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } },
+			dependencies: { dshmarket: "^1.65.0" }
+		}, null, 2)}\n`, "utf8");
+		await writeFile(modernPatch, `# keep me\n\n${brokenLegacyPatch.split("\n").slice(2).join("\n")}`, "utf8");
+
+		const dryRun = runWith(modern, "--dry-run");
+		assert.match(dryRun, /profile bundle \(dsh >= 0\.1\.7\)/, "dry run must detect the pnpm profile layout");
+		runWith(modern);
+		runWith(modern);
+
+		const bundleManifest = JSON.parse(await readFile(modernManifest, "utf8"));
+		assert.equal(bundleManifest.dependencies["dsh-usage-stats"], `file:${join(dirname(dirname(installer))).replace(/\\/g, "/")}`);
+		assert.equal(bundleManifest.dsh.profile.bundles.filter((name) => name === "dsh-usage-stats").length, 1, "bundle must be listed exactly once");
+		assert.equal(bundleManifest.dependencies.dshmarket, "^1.65.0", "unrelated dependencies must survive");
+		const modernInstalled = JSON.parse(await readFile(join(modern, "profiles", "web", "node_modules", "dsh-usage-stats", "package.json"), "utf8"));
+		assert.equal(modernInstalled.name, "dsh-usage-stats");
+		const cleanedPatch = await readFile(modernPatch, "utf8");
+		assert.match(cleanedPatch, /^# keep me$/m, "unrelated patch comments must survive");
+		assert.doesNotMatch(cleanedPatch, pluginEntry, "the legacy insert must be removed once the bundle mounts the plugin");
+		assert.match(runWith(modern, "--check"), /layout:\s+profile bundle/);
+		assert.equal(await readFile(join(modern, "profiles", "node_modules", "dsh-usage-stats", "package.json"), "utf8").then(() => true, () => false), false, "the legacy copy must not be created");
+
+		// --no-enable copies files without touching the manifest.
+		const bare = await mkdtemp(join(tmpdir(), "dsh-usage-stats-profile-bare-"));
+		try {
+			await mkdir(join(bare, "profiles", "web"), { recursive: true });
+			await writeFile(join(bare, "profiles", "web", "package.json"), `${JSON.stringify({
+				name: "dsh-profile-web",
+				dsh: { profile: { bundles: ["@deepseek-ai/dsh-base"] } },
+				dependencies: {}
+			}, null, 2)}\n`, "utf8");
+			runWith(bare, "--no-enable");
+			const untouched = JSON.parse(await readFile(join(bare, "profiles", "web", "package.json"), "utf8"));
+			assert.deepEqual(untouched.dsh.profile.bundles, ["@deepseek-ai/dsh-base"], "--no-enable must not edit the manifest");
+			assert.equal(await readFile(join(bare, "profiles", "web", "node_modules", "dsh-usage-stats", "lib", "client.js"), "utf8").then((text) => text.length > 1000), true);
+		} finally {
+			await rm(bare, { recursive: true, force: true });
+		}
+	} finally {
+		await rm(modern, { recursive: true, force: true });
+	}
 	console.log("INSTALLER REGRESSION TESTS PASSED");
 } finally {
 	await rm(home, { recursive: true, force: true });

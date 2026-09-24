@@ -17,9 +17,19 @@ const react = require("react");
 const jsxRuntime = require("react/jsx-runtime");
 const { renderToStaticMarkup } = require("react-dom/server");
 
-// Fake primitives: every named export is a no-op component (returns its props as children is not needed).
+// Fake primitives: exactly the 0.1.7 surface the bundle may ask for. A catch-all
+// Proxy would hide the breakage this file exists to catch — a renamed icon
+// silently resolving to a stub — so the export map stays explicit.
 const Stub = () => null;
-const primitives = new Proxy({}, { get: () => Stub });
+const ICON_EXPORTS = [
+	"IconChevronLeftOutlineRegular",
+	"IconChevronRightOutlineRegular",
+	"IconCloseOutlineRegular",
+	"IconDataOutlineRegular",
+	"IconRefreshOutlineRegular",
+	"IconSettingsOutlineRegular"
+];
+const primitives = Object.fromEntries(ICON_EXPORTS.map((name) => [name, Stub]));
 
 let captured = null;
 globalThis.window = { __ModuleLoader__: { load: (entry) => { captured = entry; } } };
@@ -52,6 +62,30 @@ const { UsageStatsPanel } = exports_;
 const markup = renderToStaticMarkup(react.createElement(UsageStatsPanel, { wide: true, t: (key) => key }));
 if (!markup.includes("用量/余额") && !markup.includes("panel.badge")) throw new Error("badge label missing from markup");
 console.log("render ok, markup length:", markup.length);
+
+// Icon surface: dsh 0.1.7 renamed every primitives icon (trailing optical size →
+// stroke-weight suffix). The bundle must request the new names, must not touch
+// `primitives.Icon*` directly, and must still mount on a host that exports none
+// of them — the regression that made the whole panel disappear on 0.1.7.
+for (const name of ICON_EXPORTS) {
+	if (!source.includes(name)) throw new Error(`client must request the 0.1.7 icon ${name}`);
+}
+if (/primitives\.Icon/.test(source)) throw new Error("icons must be resolved through resolveIcon(), not read off primitives directly");
+
+// Degradation: an empty primitives module must not break the render.
+let bareCaptured = null;
+globalThis.window = { __ModuleLoader__: { load: (entry) => { bareCaptured = entry; } } };
+new Function(source)();
+const bareExports = bareCaptured.factory((spec) => {
+	if (spec === "react") return react;
+	if (spec === "react/jsx-runtime") return jsxRuntime;
+	if (spec === "@deepseek-ai/dsh-client-ui-primitives") return {};
+	throw new Error(`unexpected require: ${spec}`);
+});
+const bareMarkup = renderToStaticMarkup(react.createElement(bareExports.UsageStatsPanel, { wide: true, t: (key) => key }));
+if (bareMarkup.length < 200 || !bareMarkup.includes("panel.badge")) {
+	throw new Error(`the panel must still render when the host exports no icons (got ${bareMarkup.length} chars)`);
+}
 
 // Apply against a stub client context.
 const registrations = [];
@@ -166,6 +200,21 @@ if (!dayDetail.includes("deepseek-official · deepseek-v4-flash")) throw new Err
 if (!dayDetail.includes("ark · deepseek-v4-flash")) throw new Error("same model from another provider must stay distinct");
 if (dayDetail.length < 500) throw new Error("day detail markup too small");
 if (!dayDetail.includes("usg_dayRing") || !dayDetail.includes("usg_compLegend")) throw new Error("day detail must render the composition ring with a legend");
+// 口径一致性：图例是"占当日总量"的构成份额，环心是"按输入侧算"的命中率。
+// 两者分母不同（97.2% vs 98.1%），所以不能共用同一个词；环心必须写明分母。
+if (!dayDetail.includes("usg_dayRingNote") || !dayDetail.includes("usage.hitRateNote")) {
+	throw new Error("the ring centre must state the hit-rate denominator, not just a bare percentage");
+}
+for (const [fragment, label] of [
+	['"usage.hitRate": "缓存命中率"', "zh rate label"],
+	['"usage.hitRateNote": "占输入"', "zh rate denominator"],
+	['"usage.hitRate": "Cache hit rate"', "en rate label"],
+	['"usage.hitRateNote": "of prompt"', "en rate denominator"],
+	['"platform.hit": "缓存命中"', "zh token-category label"],
+	['"platform.cacheHit": "缓存命中率"', "zh platform rate label"]
+]) {
+	if (!source.includes(fragment)) throw new Error(`cache-hit wording contract missing: ${label} (${fragment})`);
+}
 const inlineStyles = dayDetail.match(/style="[^"]*background[^"]*"/g) ?? [];
 if (inlineStyles.length < 6) throw new Error("composition segments must carry their inline colors; got: " + JSON.stringify(inlineStyles.slice(0, 4)));
 if (!dayDetail.includes("99.1%") || !dayDetail.includes("0.6%")) throw new Error("composition legend must show per-segment percentages");

@@ -8,7 +8,7 @@
 
 DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.7.0 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.7.1 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、用量 Token 或上游原始响应发送到浏览器。
 
@@ -68,7 +68,12 @@ PowerShell、命令提示符和 macOS/Linux 终端使用同一条命令：
 npx --yes github:ray19156014597/dsh-usage-stats
 ```
 
-安装器会把运行文件复制到 `~/.dsh/profiles/node_modules/dsh-usage-stats`，并在 `profiles/web/cordis.patch.yml` 中幂等启用插件。重复运行即可更新，不会重复追加配置。设置了 `DSH_HOME` 时使用该目录。
+安装器会自动识别 profile 布局：
+
+- **dsh ≥ 0.1.7**（profile 由 pnpm 管理）：把运行文件复制到 `~/.dsh/profiles/web/node_modules/dsh-usage-stats`，在 `profiles/web/package.json` 里登记 `dsh.profile.bundles` 与 `file:` 依赖（插件由此成为 profile bundle，客户端半才会被下发），并清掉 `profiles/web/cordis.patch.yml` 里遗留的手工 insert —— 否则同一个入口 id 会被挂载两次。
+- **dsh < 0.1.7**：复制到 `~/.dsh/profiles/node_modules/dsh-usage-stats`，并幂等追加 Cordis entry。
+
+重复运行即可更新，不会重复追加配置。设置了 `DSH_HOME` 时使用该目录。
 
 `dsh plugin` 与 `npx` 是两条独立安装路径，请选择其中一种；不要同时保留手工 Cordis entry 和 bundle 注册，否则会重复挂载。
 
@@ -178,7 +183,7 @@ Procedure:
 2. Prefer `dsh plugin --profile web update dsh-usage-stats` when already installed; otherwise use `dsh plugin --profile web add "github:ray19156014597/dsh-usage-stats"`.
 3. If unavailable, use: npx --yes github:ray19156014597/dsh-usage-stats
 4. Do not combine bundle installation with an existing manual dsh-usage-stats Cordis entry.
-5. For npx, require a verified package and exactly one Cordis entry, then run again with --check.
+5. For npx, require a verified package plus exactly one Cordis entry (dsh < 0.1.7) or exactly one dsh.profile.bundles entry (dsh >= 0.1.7), then run again with --check. The installer prints which layout it detected.
 6. Report the installation path and resolved profile paths.
 7. If dsh web is running, report that a restart is needed and stop.
 
@@ -254,7 +259,7 @@ node scripts/check-balance.mjs
 
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.7.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
+当前版本为 `0.7.1`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
 
 - [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、平台用量接口解析与模型明细）。
 
