@@ -729,11 +729,11 @@ async function testPlatformNoCredential(root) {
 //#region usage-token settings route
 import { EventEmitter } from "node:events";
 
-function bodyRequest(url, method, body) {
+function bodyRequest(url, method, body, headers = {}) {
 	const req = new EventEmitter();
 	req.method = method;
 	req.url = url;
-	req.headers = { host: "localhost:3080", "content-type": "application/json" };
+	req.headers = { host: "localhost:3080", "content-type": "application/json", "content-length": String(Buffer.byteLength(body)), ...headers };
 	req.socket = { remoteAddress: "127.0.0.1" };
 	req.destroy = () => {};
 	queueMicrotask(() => {
@@ -885,6 +885,295 @@ async function testPlatformSyncRoute(root) {
 }
 //#endregion
 
+/**
+ * Report repro 1: an empty month only says that month had no usage — it never
+ * proves earlier months had none. Oct 100 / Sep 0 / Aug 300 must total 400, and
+ * because the walk is window-bounded the result must carry a range + `limited`
+ * flag instead of pretending to be a lifetime total.
+ */
+async function testPlatformCumulativeGap() {
+	const totals = { "2026-10": 100, "2026-09": 0, "2026-08": 300 };
+	const walk = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 6,
+		monthTotal: async (m, y) => totals[`${y}-${String(m).padStart(2, "0")}`] ?? 0
+	});
+	assert.equal(walk.total, 400, "an empty month must not hide older usage");
+	assert.equal(walk.months, 2);
+	assert.equal(walk.oldest, "2026-08");
+	assert.equal(walk.newest, "2026-10");
+	assert.equal(walk.scannedMonths, 6, "the whole window must be scanned");
+	assert.deepEqual(walk.range, { from: "2026-05", to: "2026-10" });
+	assert.equal(walk.limited, false, "an empty month below the oldest usage makes the window complete for observed activity");
+
+	// Usage all the way down to the window edge: there may be more history.
+	const full = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 3,
+		monthTotal: async () => 10
+	});
+	assert.equal(full.total, 30);
+	assert.equal(full.limited, true, "usage reaching the window edge must be flagged limited");
+	assert.equal(full.scannedMonths, 3);
+	assert.deepEqual(full.range, { from: "2026-08", to: "2026-10" });
+
+	// No usage anywhere in the window — "0" must not be sold as a lifetime total.
+	const none = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 4,
+		monthTotal: async () => 0
+	});
+	assert.equal(none.total, 0);
+	assert.equal(none.oldest, null);
+	assert.equal(none.limited, true, "an empty window cannot claim a lifetime zero");
+
+	// Scan budget: a slow upstream stops the walk instead of stalling the route.
+	const budget = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 24,
+		budgetMs: 1,
+		monthTotal: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			return 7;
+		}
+	});
+	assert.equal(budget.scannedMonths, 1, "the scan budget must stop the walk");
+	assert.equal(budget.total, 7);
+	assert.equal(budget.limited, true);
+	console.log("platform cumulative gap + window flags ok");
+}
+
+/**
+ * Report repro 6: HTTP 200 with a missing cost payload is "cost unavailable",
+ * never a confirmed zero. All three parsing paths must say so.
+ */
+async function testPlatformCostAvailability() {
+	const { amount, cost } = byKeyFixtures();
+	const costless = { data: { biz_data: null } };
+
+	const month = await platform.fetchPlatformUsageByKey("token-t", {
+		month: 8,
+		year: 2026,
+		fetchImpl: async (url) => (String(url).includes("by_api_key/amount") ? okJson(amount) : okJson(costless))
+	});
+	assert.equal(month.costAvailable, false, "a missing by_api_key cost payload must not look like zero cost");
+	assert.equal(month.monthCost, 0);
+	assert.ok(month.days.length > 0, "token figures must survive a missing cost payload");
+
+	const priced = await platform.fetchPlatformUsageByKey("token-t", {
+		month: 8,
+		year: 2026,
+		fetchImpl: async (url) => (String(url).includes("by_api_key/amount") ? okJson(amount) : okJson(cost))
+	});
+	assert.equal(priced.costAvailable, true);
+	closeTo(priced.monthCost, 4.25);
+
+	const dayFix = dayFixtures();
+	const day = await platform.fetchPlatformDayDetail("token-t", {
+		date: "2026-08-23",
+		fetchImpl: async (url) => (String(url).includes("by_api_key/amount") ? okJson(dayFix.amount) : okJson(costless))
+	});
+	assert.equal(day.costAvailable, false, "the day detail must flag a missing cost payload too");
+
+	const legacy = await platform.fetchPlatformUsage("token-t", {
+		month: 8,
+		year: 2026,
+		fetchImpl: async (url) => (String(url).includes("/usage/amount") ? okJson(AMOUNT_FIXTURE) : okJson(costless))
+	});
+	assert.equal(legacy.costAvailable, false, "the legacy fallback must flag a missing cost payload too");
+	assert.equal(legacy.monthCost, 0);
+
+	const legacyPriced = await platform.fetchPlatformUsage("token-t", {
+		month: 8,
+		year: 2026,
+		fetchImpl: async (url) => (String(url).includes("/usage/amount") ? okJson(AMOUNT_FIXTURE) : okJson(COST_FIXTURE))
+	});
+	assert.equal(legacyPriced.costAvailable, true);
+	closeTo(legacyPriced.monthCost, 7.15);
+	console.log("platform cost availability ok (by_api_key / day / legacy)");
+}
+
+/** A context whose credential seam resolves exactly the refs it is given, recording lookups. */
+function refContext({ refs, routes, resolvedRefs }) {
+	const credentials = {
+		resolve: async (ref) => {
+			resolvedRefs.push(ref);
+			return refs[ref] === void 0 ? void 0 : { value: refs[ref] };
+		}
+	};
+	return {
+		logger: { warn: () => {} },
+		credentials,
+		webServer: { register: (entry) => { routes?.set(entry.path, entry.handler); return () => {}; } },
+		effect: (register) => register(),
+		get: (name) => name === "settings" ? { get: () => void 0 } : name === "credentials" ? credentials : void 0
+	};
+}
+
+/**
+ * Report repro 2: `usageTokenRef` was honoured by the settings page (and the
+ * background refresh) but not by the month/total/day routes, so a custom ref
+ * reported "configured" while every query answered "no-credential".
+ */
+async function testPlatformCredentialRefRouting(root) {
+	const refs = { CUSTOM_USAGE: "custom-token-abc" };
+	const routes = new Map();
+	const resolvedRefs = [];
+	const plugin = await freshModule("custom-ref", join(root, "custom-ref"));
+	await plugin.apply(refContext({ refs, routes, resolvedRefs }), { usageTokenRef: "CUSTOM_USAGE" }, { disableBackgroundRefresh: true });
+
+	const status = makeResponse();
+	await routes.get(plugin.PLATFORM_TOKEN_PATH)(request(plugin.PLATFORM_TOKEN_PATH), status);
+	assert.equal(JSON.parse(status.body).configured, true, "the settings route must see the custom ref");
+
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = platformFetchStub([]);
+	try {
+		for (const path of [plugin.PLATFORM_PATH, plugin.PLATFORM_TOTAL_PATH]) {
+			const response = makeResponse();
+			await routes.get(path)(request(path), response);
+			const body = JSON.parse(response.body);
+			assert.equal(body.ok, true, `${path} must use the configured credential ref (got ${body.error ?? "ok"})`);
+		}
+		const day = makeResponse();
+		await routes.get(plugin.PLATFORM_DAY_PATH)(request(`${plugin.PLATFORM_DAY_PATH}?date=2026-08-23`), day);
+		assert.equal(JSON.parse(day.body).ok, true, "the day route must use the configured credential ref");
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
+	const monthRefs = [...new Set(resolvedRefs)];
+	assert.ok(monthRefs.every((ref) => ref === "CUSTOM_USAGE"), `every platform route must resolve the configured ref, saw ${JSON.stringify(monthRefs)}`);
+
+	// The default ref stays the default: a credential stored under another name
+	// must NOT satisfy an unconfigured plugin.
+	const routes2 = new Map();
+	const defaultRefs = [];
+	const plugin2 = await freshModule("default-ref", join(root, "default-ref"));
+	await plugin2.apply(refContext({ refs, routes: routes2, resolvedRefs: defaultRefs }), {}, { disableBackgroundRefresh: true });
+	for (const path of [plugin2.PLATFORM_PATH, plugin2.PLATFORM_TOTAL_PATH]) {
+		const response = makeResponse();
+		await routes2.get(path)(request(path), response);
+		assert.equal(JSON.parse(response.body).error, "no-credential", `${path} must not read a differently-named credential`);
+	}
+	assert.ok(defaultRefs.includes("DEEPSEEK_USAGE_TOKEN"), "the default ref must still be resolved by name");
+	console.log("platform credential ref routing ok (custom ref wired into month/total/day)");
+}
+
+/**
+ * Report repro 3: the platform caches were keyed by month/date only, so switching
+ * the credential kept serving the previous account's numbers, and a forced
+ * cumulative refresh still reused the five-minute per-month sub-cache.
+ */
+async function testPlatformCacheIdentity(root) {
+	const refs = { DEEPSEEK_USAGE_TOKEN: "token-a" };
+	const routes = new Map();
+	const plugin = await freshModule("cache-identity", join(root, "cache-identity"));
+	await plugin.apply(refContext({ refs, routes, resolvedRefs: [] }), {}, { disableBackgroundRefresh: true });
+
+	const previousFetch = globalThis.fetch;
+	const calls = [];
+	globalThis.fetch = async (url) => {
+		calls.push(String(url));
+		const u = String(url);
+		const f = byKeyFixtures();
+		if (u.includes("by_api_key/amount")) return okJson(f.amount);
+		if (u.includes("by_api_key/cost")) return okJson(f.cost);
+		if (u.includes("/usage/amount")) return okJson(AMOUNT_FIXTURE);
+		if (u.includes("/usage/cost")) return okJson(COST_FIXTURE);
+		throw new Error(`unexpected URL in stub: ${u}`);
+	};
+	try {
+		const monthPath = `${plugin.PLATFORM_PATH}?month=8&year=2026`;
+		const dayPath = `${plugin.PLATFORM_DAY_PATH}?date=2026-08-23`;
+		const firstMonth = makeResponse();
+		await routes.get(plugin.PLATFORM_PATH)(request(monthPath), firstMonth);
+		closeTo(JSON.parse(firstMonth.body).monthCost, 4.25);
+
+		// Same credential, second read → served from the in-memory cache.
+		const callsAfterFirst = calls.length;
+		const cached = makeResponse();
+		await routes.get(plugin.PLATFORM_PATH)(request(monthPath), cached);
+		assert.equal(calls.length, callsAfterFirst, "a repeat read inside the TTL must not re-query upstream");
+
+		// Credential switch → the cached month/day/total must not survive.
+		refs.DEEPSEEK_USAGE_TOKEN = "token-b";
+		const switchedMonth = makeResponse();
+		await routes.get(plugin.PLATFORM_PATH)(request(monthPath), switchedMonth);
+		assert.ok(calls.length > callsAfterFirst, "switching the credential must re-query upstream");
+		assert.equal(JSON.parse(switchedMonth.body).ok, true);
+
+		const switchedDay = makeResponse();
+		await routes.get(plugin.PLATFORM_DAY_PATH)(request(dayPath), switchedDay);
+		assert.equal(JSON.parse(switchedDay.body).ok, true);
+		const dayCalls = calls.length;
+		const cachedDay = makeResponse();
+		await routes.get(plugin.PLATFORM_DAY_PATH)(request(dayPath), cachedDay);
+		assert.equal(calls.length, dayCalls, "the day cache is reused for the new credential");
+		refs.DEEPSEEK_USAGE_TOKEN = "token-c";
+		const switchedDayAgain = makeResponse();
+		await routes.get(plugin.PLATFORM_DAY_PATH)(request(dayPath), switchedDayAgain);
+		assert.ok(calls.length > dayCalls, "switching the credential must invalidate the day cache too");
+
+		// Forced cumulative refresh must bypass the per-month sub-cache.
+		const totalPath = plugin.PLATFORM_TOTAL_PATH;
+		const first = makeResponse();
+		await routes.get(totalPath)(request(totalPath), first);
+		assert.equal(JSON.parse(first.body).ok, true);
+		const beforeForce = calls.length;
+		const forced = makeResponse();
+		await routes.get(totalPath)(request(`${totalPath}?refresh=1`), forced);
+		assert.equal(JSON.parse(forced.body).ok, true);
+		assert.ok(calls.length - beforeForce >= 1, "refresh=1 must re-query the monthly sums instead of reusing the sub-cache");
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
+	console.log("platform cache identity ok (credential switch + force-through-subcache)");
+}
+
+/**
+ * Report repro 9: the token route accepted any loopback request. A cross-site
+ * page in the user's own browser also arrives from 127.0.0.1, so the write must
+ * additionally check Origin / Sec-Fetch-Site / JSON content type. Requests
+ * without an Origin stay allowed for local tools.
+ */
+async function testRouteSameOriginFence(root) {
+	const plugin = await freshModule("same-origin", join(root, "same-origin"));
+	const routes = new Map();
+	await plugin.apply(makeContext({ routes, settings: { get: () => void 0 } }), {}, { disableBackgroundRefresh: true });
+	const handler = routes.get(plugin.PLATFORM_TOKEN_PATH);
+	const tokenPath = plugin.PLATFORM_TOKEN_PATH;
+	const body = JSON.stringify({ token: "saved-token-123" });
+
+	const foreignOrigin = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", body, { origin: "https://evil.example" }), foreignOrigin);
+	assert.equal(foreignOrigin.status, 403, "a foreign Origin must be refused");
+
+	const crossSite = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", body, { "sec-fetch-site": "cross-site" }), crossSite);
+	assert.equal(crossSite.status, 403, "Sec-Fetch-Site: cross-site must be refused");
+
+	const plainText = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", body, { "content-type": "text/plain" }), plainText);
+	assert.equal(plainText.status, 415, "a non-JSON body must be refused");
+
+	const sameOrigin = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", body, { origin: "http://localhost:3080" }), sameOrigin);
+	assert.equal(sameOrigin.status, 200, "the panel's own same-origin POST must pass");
+
+	const noOrigin = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", JSON.stringify({ token: "cli-token-456" })), noOrigin);
+	assert.equal(noOrigin.status, 200, "a local tool without an Origin header must still work");
+
+	const otherLoopbackPort = makeResponse();
+	await handler(bodyRequest(tokenPath, "POST", body, { origin: "http://127.0.0.1:9999" }), otherLoopbackPort);
+	assert.equal(otherLoopbackPort.status, 403, "a different loopback origin must not write credentials");
+	console.log("platform token route same-origin fence ok (origin / sec-fetch-site / content-type)");
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-platform-"));
 try {
 	await testParseAndBreakdown();
@@ -894,6 +1183,8 @@ try {
 	await testByKeyParsing();
 	await testSmartFallback();
 	await testPlatformCumulative();
+	await testPlatformCumulativeGap();
+	await testPlatformCostAvailability();
 	await testPlatformDayDetail();
 	await testPlatformRoute(root);
 	await testPlatformTotalRoute(root);
@@ -901,6 +1192,9 @@ try {
 	await testPlatformNoCredential(root);
 	await testPlatformTokenRoute(root);
 	await testPlatformSyncRoute(root);
+	await testPlatformCredentialRefRouting(root);
+	await testPlatformCacheIdentity(root);
+	await testRouteSameOriginFence(root);
 	console.log("PLATFORM REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;

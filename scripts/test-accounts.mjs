@@ -299,7 +299,26 @@ assert.equal(ACCOUNT_REFRESH_MS, 300000);
 	assert.equal(stale.balance.remaining, ok.balance.remaining);
 	assert.equal(stale.lastSuccessAt, NOW);
 	assert.equal(service.cached("deepseek-official").balance.remaining, ok.balance.remaining);
-	console.log("transient stale retention ok");
+
+	// Report repro 7: a SECOND consecutive transient failure used to drop the
+	// balance, because the fallback read the cache entry (which is already the
+	// failure) instead of the last successful snapshot.
+	const staleAgain = await service.get("deepseek-official", { force: true });
+	assert.equal(staleAgain.status, "unavailable");
+	assert.equal(staleAgain.stale, true, "repeated transient failures must keep serving the last success");
+	assert.equal(staleAgain.balance?.remaining, ok.balance.remaining, "the balance must survive repeated outages");
+	assert.equal(staleAgain.lastSuccessAt, NOW, "lastSuccessAt must stay the real success time");
+
+	// A third outage, then recovery: the fresh snapshot replaces the stale one.
+	await service.get("deepseek-official", { force: true });
+	answer = () => jsonResponse(deepseekBody({
+		balance_infos: [{ currency: "CNY", total_balance: "12.50", granted_balance: "0", topped_up_balance: "12.50" }]
+	}));
+	const recovered = await service.get("deepseek-official", { force: true });
+	assert.equal(recovered.status, "ok");
+	assert.equal(recovered.stale, void 0, "a successful fetch must clear the stale flag");
+	assert.equal(recovered.balance.remaining, 12.5);
+	console.log("transient stale retention ok (repeated outages keep the last success)");
 }
 
 {

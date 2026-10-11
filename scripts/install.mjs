@@ -18,7 +18,7 @@ if (args.has("--help")) {
 	console.log(`dsh-usage-stats installer
 
 Usage:
-  npx --yes github:Ychris12138/dsh-usage-stats [options]
+  npx --yes github:ray19156014597/dsh-usage-stats [options]
 
 Options:
   --check      Verify the installed package and its profile wiring without changing them

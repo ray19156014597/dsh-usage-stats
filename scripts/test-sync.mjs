@@ -111,10 +111,62 @@ async function testSyncErrorShape() {
 	console.log("sync error shape ok");
 }
 
+/**
+ * Report repro 8: `cancel()` was a no-op while `spawnBrowser()` was still
+ * pending (the kill handle was attached only after the await), so the capture
+ * went on and the token was saved anyway.
+ */
+async function testSyncCancelBeforeSpawn() {
+	const gate = deferred();
+	let saved = 0;
+	let captured = 0;
+	const service = createLoginSync({
+		browserPaths: [import.meta.filename],
+		spawn: async () => {
+			await gate.promise;
+			return { proc: { kill: () => {} }, wsUrl: "ws://127.0.0.1:1234" };
+		},
+		capture: async () => { captured += 1; return "late-token"; },
+		verify: async () => true,
+		save: async () => { saved += 1; }
+	});
+	assert.equal((await service.start()).started, true);
+	// Cancel BEFORE the spawn resolves.
+	const cancelResult = await service.cancel();
+	assert.equal(cancelResult.running, false);
+	assert.equal(await service.isRunning(), false, "cancel must take effect immediately, even mid-spawn");
+	assert.equal(service.status().last?.error, "aborted", "cancel must record the abort");
+	gate.resolve();
+	for (let i = 0; i < 80 && await service.isRunning(); i += 1) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(saved, 0, "a cancelled sync must never save a token");
+	assert.equal(captured, 0, "a cancelled sync must not start capturing");
+	assert.equal(service.status().last.ok, false);
+	assert.equal(service.status().last.error, "aborted");
+
+	// A new round may start right away and must not be clobbered by the old one.
+	const second = createLoginSync({
+		browserPaths: [import.meta.filename],
+		spawn: async () => ({ proc: { kill: () => {} }, wsUrl: "ws://127.0.0.1:1234" }),
+		capture: async ({ signal }) => {
+			assert.equal(signal?.cancelled, false, "the capture must receive the round's signal");
+			return "second-token";
+		},
+		verify: async () => true,
+		save: async () => { saved += 1; }
+	});
+	await second.start();
+	await second.cancel();
+	await second.start();
+	for (let i = 0; i < 80 && await second.isRunning(); i += 1) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(second.status().last.ok, true, "a restarted round must report its own result");
+	console.log("sync cancel-before-spawn ok (no save, immediate cancel, restartable)");
+}
+
 await testBrowserDiscovery();
 await testSyncSuccessFlow();
 await testSyncUnavailable();
 await testSyncCancel();
+await testSyncCancelBeforeSpawn();
 await testHookScript();
 await testSyncErrorShape();
 console.log("SYNC REGRESSION TESTS PASSED");

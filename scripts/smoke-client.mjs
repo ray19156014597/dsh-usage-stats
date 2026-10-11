@@ -760,9 +760,12 @@ for (const gone of ["--usg-mat-", "feTurbulence", "usg-mat-grain", "26vw", "zoom
 	if (source.includes(gone)) throw new Error(`the frosted recipe must be gone: ${gone}`);
 }
 // 固定显示比例：面板尺寸不随屏幕大小变化（用户要求"固定比例、各屏一致"），只保留窄窗口不溢出的兜底。
-for (const fragment of ["width:440px;max-width:calc(100vw - 24px);max-height:74vh"]) {
+// 高度必须同时夹住视口：只写 74vh 时 844×390 视口里 bottom:128px + 288.6px 会把标题栏顶出屏幕
+// （报告实测面板 y = -26.6px）。
+for (const fragment of ["width:440px;max-width:calc(100vw - 24px);max-height:min(74vh,calc(100vh - 140px))"]) {
 	if (!source.includes(fragment)) throw new Error(`missing fixed-size contract: ${fragment}`);
 }
+if (source.includes("max-height:74vh")) throw new Error("the panel height must stay clamped to the viewport, not a bare 74vh");
 // 面板 + tooltip 各一条规则（含 -webkit- 前缀共 4 处）；卡片与内嵌块不再二次模糊。
 const blurUses = (source.match(/backdrop-filter:blur\(var\(--usg-glass/g) ?? []).length;
 if (blurUses !== 4) throw new Error(`backdrop-filter must stay on exactly two surfaces (panel + tooltip), found ${blurUses} declarations`);
@@ -829,5 +832,59 @@ for (const fragment of ['role: "img"', '"usage.hourSummary"', '"usage.ringLabel"
 }
 // B3：平台区与日详情都有骨架，不再只靠一行文字。
 if (!source.includes("detailLoading") || !source.includes("platform-skel-")) throw new Error("loading skeletons must cover the platform block and the day detail");
+
+// ---- 审阅修复回归（2026-10-11 报告）-------------------------------------------
+// ① 日详情必须走独立加载函数，并被手动刷新带上：它原来挂在一个依赖
+//    [selectedDay, platformActive] 的 effect 上，同一天刷新月度数据时两个依赖都不变，
+//    于是顶部总量涨了、按 API Key 与小时图还是旧值（报告实测新增日详情请求 0 次）。
+for (const fragment of ["const loadDayDetail = react.useCallback", "if (selectedDay !== null && platformActive) requests.push(loadDayDetail(selectedDay, true))", "if (selectedDay !== null && platformActive) loadDayDetail(selectedDay, force)"]) {
+	if (!source.includes(fragment)) throw new Error(`missing day-detail refresh contract: ${fragment}`);
+}
+if (source.includes("/api/usage-stats/platform/day?date=${selectedDay}`)")) {
+	throw new Error("the day-detail request must go through loadDayDetail(date, force)");
+}
+// ② 五分钟轮询必须覆盖同一组平台数据（累计 + 最近 14 天 + 选中日日详情），
+//    不能只重拉月用量（报告实测：推进五分钟后 /platform/total 新增 0 次请求）。
+for (const fragment of ["const platformTick = react.useCallback", "loadPlatformTotal(force)", "loadRecentPlatform(force)", "window.setInterval(() => platformTick(), 300000)"]) {
+	if (!source.includes(fragment)) throw new Error(`missing platform polling contract: ${fragment}`);
+}
+if (source.includes("window.setInterval(() => loadPlatform(platformMonth), 300000)")) {
+	throw new Error("the five-minute timer must refresh the whole platform group, not just the month");
+}
+// ③ 减少动态效果必须排在所有基础动效之后（同特异性后者胜出）：它原来写在
+//    .usg_body 基础动画之前，被整条覆盖（报告实测计算样式仍是 usg-body-in / 420ms）。
+const reducedMotionIndex = source.lastIndexOf("prefers-reduced-motion:reduce");
+const bodyAnimationIndex = source.indexOf("animation:usg-body-in");
+if (reducedMotionIndex < bodyAnimationIndex) {
+	throw new Error("the reduced-motion overrides must come after the base animations");
+}
+for (const fragment of [".usg_body,.usg_body[data-dir]{animation:none}", ".usg_skelBlock::after{animation:none}"]) {
+	if (!source.includes(fragment)) throw new Error(`missing reduced-motion override: ${fragment}`);
+}
+// ④ 鼠标与键盘共用切月边界：PageDown 不能进未来月，切月后要把焦点交回日历
+//    （报告实测：进入 2026-11 且 activeElement 变成 BODY）。
+for (const fragment of ["const stepMonth = react.useCallback", "if (next > currentMonthKey()) return;", "onMonthStep(event.key === \"PageUp\" ? -1 : 1, key)", "const target = dayKeys.includes(focusRequest.key) ? focusRequest.key : dayKeys[0]", "focusCell(target)"]) {
+	if (!source.includes(fragment)) throw new Error(`missing month-navigation contract: ${fragment}`);
+}
+if (source.includes("onMonthStep: (delta) => setPlatformMonth(shiftMonth(platformMonth, delta))")) {
+	throw new Error("the keyboard month step must not bypass the shared stepMonth boundary");
+}
+// ⑤ 费用缺失不能显示成 ¥0.00：服务端给 costAvailable:false，客户端所有金额位改「—」。
+for (const fragment of ["platform.costAvailable !== false", '"platform.costUnavailable"', '"platform.costUnavailable": "费用数据不可用（Token 数据不受影响）。"', '"platform.costUnavailable": "Cost data unavailable (token figures are unaffected)."']) {
+	if (!source.includes(fragment)) throw new Error(`missing cost-availability contract: ${fragment}`);
+}
+// ⑥ 会话列表读取失败：服务端标 partial，面板必须说明"可能不完整"。
+for (const fragment of ['setUsagePartial(payload.partial === true)', '"usage.partial"', '"usage.partial": "会话列表读取失败，统计可能不完整（已保留上次结果）。"', '"usage.partial": "Session listing failed — these numbers may be incomplete (last result kept)."']) {
+	if (!source.includes(fragment)) throw new Error(`missing partial-data contract: ${fragment}`);
+}
+// ⑦ 累计是有界窗口：limited 时标签换「近 24 个月」并给出扫描区间。
+for (const fragment of ["platformTotal.limited === true", '"usage.totalTokensLimited"', '"usage.scope"', "totalTokensLabel", "scopeNote"]) {
+	if (!source.includes(fragment)) throw new Error(`missing cumulative-scope contract: ${fragment}`);
+}
+// ⑧ 同步取消：客户端每轮一个序号 + 取消标记，旧轮询不得改写新一轮状态。
+for (const fragment of ["const syncSeqRef = react.useRef(0)", "syncSeqRef.current !== seq", "syncCancelledRef.current = true", "if (syncTimerRef.current !== null)"]) {
+	if (!source.includes(fragment)) throw new Error(`missing sync-cancel contract: ${fragment}`);
+}
+console.log("review fixes contract ok (day refresh, unified polling, reduced motion, month bounds, cost/partial/scope, sync cancel)");
 
 console.log("SMOKE TEST PASSED");

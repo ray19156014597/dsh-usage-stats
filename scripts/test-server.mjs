@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -192,10 +192,12 @@ async function testLiveSessionApiDrift(root) {
 	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 24, "the modern session's appended events must be folded");
 
 	// A persistence backend exposing neither listSnapshots() nor list() must
-	// be skipped without failing the route.
+	// not fail the route, must not prune the cached folds it cannot enumerate,
+	// and must say so (`partial`) instead of reporting a total of 0.
 	const bare = makeContext({ sessions: { list: () => [] }, persistence: {} });
 	const bareResult = await plugin.collectUsage(bare);
-	assert.equal(bareResult.total.tokens, 0, "an unknown persistence surface must degrade to no persisted usage");
+	assert.equal(bareResult.total.tokens, 24, "an unknown persistence surface must keep the cached persisted usage");
+	assert.equal(bareResult.partial, true, "an unlistable persistence surface must flag the payload as incomplete");
 }
 
 /**
@@ -320,6 +322,43 @@ async function testUsageSnapshotStaleWhileRevalidate(root) {
 	assert.equal(lists, 3, "force folds again");
 }
 
+/**
+ * Report repro 4: a failed `persistence.list()` used to look like "no sessions",
+ * so the prune deleted every cached fold, the cache file was rewritten without
+ * them and the route answered 0 as if that were a real total. A failure must
+ * keep the cached folds, skip the prune and flag the payload `partial`.
+ */
+async function testPersistedListingFailure(root) {
+	const home = join(root, "listing-failure");
+	const plugin = await freshModule("listing-failure", home);
+	const id = "listing-session";
+	let mode = "ok"; // ok | boom | empty
+	const persistence = {
+		list: async () => {
+			if (mode === "boom") throw new Error("storage unavailable");
+			return mode === "empty" ? [] : [{ header: { id }, revision: "r1" }];
+		},
+		readFrom: async () => ({ events: [usageEvent(1, 100)] })
+	};
+	const ctx = makeContext({ sessions: { list: () => [] }, persistence });
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 100);
+
+	// Transient listing failure: the cached fold survives and says so.
+	mode = "boom";
+	const partial = await plugin.collectUsage(ctx);
+	assert.equal(partial.total.tokens, 100, "a failed listing must not delete the cached fold");
+	assert.equal(partial.partial, true, "a failed listing must be reported as incomplete");
+
+	const cacheFile = JSON.parse(await readFile(join(home, "storages", "usage-stats-cache.json"), "utf8"));
+	assert.ok(cacheFile.sessions[id] !== void 0, "the session must stay in the cache file after a failed listing");
+
+	// A SUCCESSFUL listing without that session is the only reason to prune.
+	mode = "empty";
+	const pruned = await plugin.collectUsage(ctx);
+	assert.equal(pruned.partial, void 0, "a complete listing is not partial");
+	assert.equal(pruned.total.tokens, 0, "a session missing from a successful listing must be pruned");
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
@@ -331,6 +370,7 @@ try {
 	await testPersistedApiDrift(root);
 	await testUsageSnapshotReuse(root);
 	await testUsageSnapshotStaleWhileRevalidate(root);
+	await testPersistedListingFailure(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;

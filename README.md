@@ -8,7 +8,7 @@
 
 DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.8.0 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.8.1 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、用量 Token 或上游原始响应发送到浏览器。
 
@@ -32,10 +32,10 @@ DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Har
 | --- | --- | --- |
 | 💳 | 账户卡片 | DeepSeek 余额与平台用量合并为**同一张卡**，一次呈现账户全貌 |
 | 📈 | DeepSeek 平台用量 | 本月/今日消费、按模型、**按 API Key** 的 Token/请求/缓存命中/费用明细（需网页用量 Token）；每日用量与本地一致地按 **GMT+8** 展示，位于 Token 用量模块之前 |
-| 📊 | Token 用量分析 | 今日、本月、累计、缓存命中率、月历热图，以及按日期/模型下钻 |
-| 🔄 | 后台刷新 | 服务端启动即刷新，之后每五分钟更新余额与本地 Token 聚合；聚合结果在 60 秒窗口内复用，多个面板/标签页不会重复折叠 |
-| 🧊 | 毛玻璃材质 | 每档表面 = 底色 + 白色罩面 + 顶边镜面高光 + 左上角光晕，面板再叠一层极细颗粒 —— 纯色背景上也能看出"玻璃"而不是半透明色块；四级阶梯（面板 < 卡片 < 内嵌块 < 浮层，越里越实），浅色/深色各一套模糊与描边参数；面板底色 48%（浅色 62%）保持通透；只有真正压在页面内容上的面板与 tooltip 才用 `backdrop-filter`（其余表面不再重复合成）；不支持该属性或开启“减少透明度”时自动退回接近不透明的表面 |
-| 📐 | 固定显示比例 | 面板在各显示器上保持同一尺寸（440px 宽、最高 74vh），不随屏幕大小放大缩小，只保留“窄窗口不溢出”的兜底；布局随内容自适应：折叠态一屏放下，展开态才滚动 |
+| 📊 | Token 用量分析 | 今日、本月、累计、缓存命中率、月历热图，以及按日期/模型下钻。累计由服务端按月回扫（最多 24 个月、单次扫描 15 秒预算）；未覆盖到用量起点时标签显示为**“近 24 个月”**并给出实际统计范围，不把有界窗口说成全部历史 |
+| 🔄 | 后台刷新 | 服务端启动即刷新，之后每五分钟更新余额与本地 Token 聚合；面板打开期间“本月 / 累计 / 最近 14 天 / 选中日详情”按同一周期一起刷新；聚合结果在 60 秒窗口内复用，多个面板/标签页不会重复折叠 |
+| 🧊 | 毛玻璃材质 | 每档表面 = 底色 + 方向性内阴影成形（上亮下暗的厚度感）+ 渐变描边环 + 顶边镜面高光，四级阶梯（面板 < 卡片 < 内嵌块 < 浮层，越里越实）；深色底色 40% / 浅色 62%，模糊 6px/4px、饱和度 1.9/1.4，浅色档不使用白色罩面，也不再叠噪点（v3 起移除）；只有真正压在页面内容上的面板与 tooltip 才用 `backdrop-filter`（其余表面不再重复合成）；不支持该属性或开启“减少透明度”时自动退回接近不透明的表面 |
+| 📐 | 固定显示比例 | 面板在各显示器上保持同一尺寸（440px 宽、最高 74vh，同时不超过视口高度减去底部锚点与顶部留白），不随屏幕大小放大缩小，只保留“窄窗口不溢出”的兜底；布局随内容自适应：折叠态一屏放下，展开态才滚动 |
 | ⌨️ | 顺手交互 | **首屏一屏放下**：余额 + 6 格统计 + 当月日历，最近 14 天/平台模型/按 API Key 折叠在下方；侧边栏渲染即预热数据，首次打开直接出热力图；面板自徽标处展开、关闭带退场动效；下钻视图带方向推入，`Esc` 逐级返回；刷新按钮转圈并把“更新于 hh:mm”换成“刷新中…”（右上角三个图标不带悬浮气泡，语义由 `aria-label` 承载）；热力图格子用面板自绘 tooltip，支持**方向键/Home/End/PageUp/PageDown** 在日历里移动，整块日历只占一个 Tab 停靠点 |
 | 🎨 | 语义化配色 | 消费走琥珀、Token 走蓝、缓存命中走青绿：6 格统计条按类别着色，日详情的环形图与占比条用同一套令牌（不再是“一片蓝”） |
 | 🔒 | 本机安全边界 | 七个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
@@ -208,9 +208,11 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 - API Key、Cookie 与用量 Token 不会进入浏览器响应、插件缓存或日志。
 - 余额请求固定使用 HTTPS、不跟随重定向，响应体上限为 1 MiB；上游地址禁止内嵌 username/password，凭据只在服务端按 credential ref 注入请求头。
 - 余额请求在发凭据前会校验域名的全部 IPv4/IPv6 解析结果并固定连接地址，防止 DNS rebinding 绕过私网限制。唯一例外是 **本地代理的 fake-ip 占位地址**（`198.18.0.0/15`，Clash / Mihomo / Surge / iKuuu 等客户端对所有域名都返回这一段的地址，再按 SNI 自行转发）：它无法指向内网服务，因此按解析结果放行并照常固定连接；但把该地址直接写进配置（`https://198.18.0.5`）仍然拒绝。域名解析到真正的内网地址时按"暂时不可用"处理，保留上一次余额并显示解析结果。
-- 七个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中五个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
+- 七个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中五个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。有副作用的请求（保存/清除 Token、启动或取消登录同步）还会校验同源 `Origin`、`Sec-Fetch-Site`，并要求带 body 的请求使用 `application/json`；不带 `Origin` 的本机工具调用（curl、PowerShell）保持放行。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
 - 用量缓存 `~/.dsh/storages/usage-stats-cache.json` 只保存聚合 Token、会话 id、不透明 revision 与折叠游标，不保存提示词、回复或文件路径。
-- DeepSeek 平台用量 Token 只在服务端解析并用于请求 `platform.deepseek.com`，平台用量结果按月份在内存中缓存五分钟，不落盘、不出现在响应中。
+- DeepSeek 平台用量 Token 只在服务端解析并用于请求 `platform.deepseek.com`，平台用量结果按月份在内存中缓存五分钟（历史月份 30 分钟），不落盘、不出现在响应中；缓存按凭据身份隔离，换 Token 或清除 Token 会立即失效月/日/累计缓存。
+- 会话列表读取失败时不会把“读不到”当成“没有会话”：插件保留上一次的聚合缓存、跳过清理，并在响应里标记 `partial: true`，面板会显示“统计可能不完整”。
+- 平台费用接口返回 200 但缺少费用结构时，响应带 `costAvailable: false`，面板把所有金额位显示为“—”，不会把“费用不可用”显示成 ¥0.00。
 
 本机反向代理会让插件看到代理自身的回环地址。请勿把端点经反向代理暴露到局域网或公网；确需代理时必须在代理层增加可靠认证与访问控制。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 
@@ -229,15 +231,15 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合 |
-| `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游 |
-| `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新 |
-| `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量；`refresh=1` 强制刷新 |
-| `GET` | `/api/usage-stats/platform/day?date=YYYY-MM-DD` | 某一天的逐小时用量与按 API Key 明细 |
+| `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合；会话列表读取失败时带 `partial: true`（保留上次聚合） |
+| `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游；连续瞬时故障时沿用最后一次成功余额并带 `stale: true` |
+| `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新；费用结构缺失时 `costAvailable: false` |
+| `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量（有界窗口）：`scannedMonths` / `range` / `limited` 说明扫描范围与完整性；`refresh=1` 强制重扫各月 |
+| `GET` | `/api/usage-stats/platform/day?date=YYYY-MM-DD&refresh=1` | 某一天的逐小时用量与按 API Key 明细；`refresh=1` 绕过五分钟缓存 |
 | `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/token` | 用量 Token 设置（状态/保存/清除；Token 本身永不返回浏览器） |
 | `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/sync` | 网页登录自动同步（开始/状态/取消；按需拉起系统浏览器窗口） |
 
-非 GET 返回 `405`（token 与 sync 路由允许 GET/POST/DELETE），非回环请求返回 `403`；所有响应均为 JSON 并带 `Cache-Control: no-cache`。
+非 GET 返回 `405`（token 与 sync 路由允许 GET/POST/DELETE），非回环请求或跨站 `Origin`/`Sec-Fetch-Site` 返回 `403`，非 JSON 请求体返回 `415`；所有响应均为 JSON 并带 `Cache-Control: no-cache`。
 
 ## 开发与验证 / Development
 
@@ -257,9 +259,11 @@ node scripts/check-balance.mjs
 
 所有服务端脚本均遵循 `DSH_HOME`。`check-balance.mjs` 可能显示真实余额，不要把输出粘贴到公开 issue。
 
+**运行时要求**：Node.js **≥ 20**（服务端半用到 `Object.hasOwn`、`node:` 前缀导入与 ESM；CI 在 Node 24 上运行）；安装与网页登录自动同步面向 Windows（Edge/Chrome 路径探测），其他平台可手动粘贴 Token。CI 目前只有 `ubuntu-latest` 一个作业，Windows 路径与文件替换的自动化覆盖尚未加入。
+
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.8.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
+当前版本为 `0.8.1`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
 
 - [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、平台用量接口解析与模型明细）。
 

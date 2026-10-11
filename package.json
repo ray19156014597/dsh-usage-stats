@@ -1,14 +1,14 @@
 {
   "name": "dsh-usage-stats",
   "description": "DeepSeek token usage heatmap, account balance, and platform usage for the dsh web GUI",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Ychris12138/dsh-usage-stats.git"
+    "url": "git+https://github.com/ray19156014597/dsh-usage-stats.git"
   },
-  "homepage": "https://github.com/Ychris12138/dsh-usage-stats#readme",
-  "bugs": "https://github.com/Ychris12138/dsh-usage-stats/issues",
+  "homepage": "https://github.com/ray19156014597/dsh-usage-stats#readme",
+  "bugs": "https://github.com/ray19156014597/dsh-usage-stats/issues",
   "keywords": [
     "deepseek",
     "deepseek-harness",
