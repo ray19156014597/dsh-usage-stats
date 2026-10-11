@@ -282,6 +282,44 @@ async function testUsageSnapshotReuse(root) {
 	assert.equal(JSON.parse(forced.body).ok, true);
 }
 
+/**
+ * Stale-while-revalidate: folding a large DSH_HOME measured ~40s, so a restarted
+ * host (empty in-memory snapshot) must answer the panel's first open from the
+ * persisted snapshot immediately — flagged `stale` — and recompute in the
+ * background. Only `refresh=1` (the ↻ button) waits for a fresh fold.
+ */
+async function testUsageSnapshotStaleWhileRevalidate(root) {
+	const home = join(root, "swr");
+	const plugin = await freshModule("swr-first", home);
+	let lists = 0;
+	const persistence = { list: async () => { lists += 1; return []; } };
+	const ctx = makeContext({ sessions: { list: () => [] }, persistence });
+
+	const cold = await plugin.readUsageSnapshot(ctx);
+	assert.equal(lists, 1, "the first read folds");
+	assert.equal(cold.stale, undefined, "a synchronous fold is not stale");
+
+	// A new module instance with the same DSH_HOME models a restarted host.
+	const restarted = await freshModule("swr-restarted", home);
+	const warm = await restarted.readUsageSnapshot(ctx);
+	assert.equal(warm.stale, true, "the persisted snapshot must be served immediately, flagged stale");
+	assert.equal(warm.days.length, cold.days.length, "the stale payload must carry the persisted data");
+	assert.equal(lists, 1, "serving the persisted snapshot must not fold");
+
+	const pending = restarted.pendingUsageRefresh();
+	assert.notEqual(pending, null, "a background refresh must have been started");
+	await pending;
+	assert.equal(lists, 2, "the background refresh folds once");
+
+	const fresh = await restarted.readUsageSnapshot(ctx);
+	assert.equal(fresh.stale, undefined, "the background fold must leave a fresh snapshot behind");
+	assert.equal(lists, 2, "the fresh snapshot is reused inside the TTL window");
+
+	const forced = await restarted.readUsageSnapshot(ctx, true);
+	assert.equal(forced.stale, undefined, "force never returns a stale payload");
+	assert.equal(lists, 3, "force folds again");
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
@@ -292,6 +330,7 @@ try {
 	await testLiveSessionApiDrift(root);
 	await testPersistedApiDrift(root);
 	await testUsageSnapshotReuse(root);
+	await testUsageSnapshotStaleWhileRevalidate(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;

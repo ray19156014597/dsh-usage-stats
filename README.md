@@ -8,7 +8,7 @@
 
 DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Harness Web GUI (`dsh web`).
 
-![dsh-usage-stats v0.7.1 interface preview](docs/images/usage-panel.svg)
+![dsh-usage-stats v0.8.0 interface preview](docs/images/usage-panel.svg)
 
 > 展示图使用脱敏演示数据；插件不会把 API Key、Cookie、用量 Token 或上游原始响应发送到浏览器。
 
@@ -259,7 +259,7 @@ node scripts/check-balance.mjs
 
 ## 兼容性与致谢 / Compatibility & credits
 
-当前版本为 `0.7.1`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
+当前版本为 `0.8.0`。插件依赖 Harness 客户端模块加载器、Cordis 服务与 session persistence；Harness 预发布接口变化时可能需要同步适配。热力图色阶跟随 `theme` 服务的主题快照（`theme/change`），拿不到该服务时回退到系统的 `prefers-color-scheme`。
 
 - [Joyi-code/DeepSeekMonitorWindows](https://github.com/Joyi-code/DeepSeekMonitorWindows)：移植 DeepSeek 平台用量方案（用量 Token、平台用量接口解析与模型明细）。
 

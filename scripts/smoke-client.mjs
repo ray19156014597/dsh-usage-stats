@@ -663,38 +663,125 @@ if (!tippedHeat.includes("aria-label")) throw new Error("heatmap cells must stay
 if (!tippedHeat.includes("tokens")) throw new Error("the accessible label must keep the token count");
 console.log("heatmap tooltip swap ok (title → aria-label + in-panel tip)");
 
+// 小窗定位踩过的三个坑，逐条锁死：
+// ① 挂错容器：挂 layer（侧栏底部 ~200px）会被 DSH 侧栏的 overflow 横向裁掉右半边
+//    （用户实测："…160,22" 后面的数字整段消失）→ 面板开着必须挂进面板。
+if (!source.includes("const container = panel ?? layer;") || !source.includes('mount: panel === null ? "layer" : "panel"')) {
+	throw new Error("the tooltip must mount inside the panel while it is open (the sidebar clips the layer)");
+}
+if (!source.includes('tip !== null && tip.mount === "panel" && tipNode') || !source.includes('tip !== null && tip.mount === "layer" && tipNode')) {
+	throw new Error("both tooltip mount points must exist");
+}
+// ② 夹取边界把 layer 宽度当容器：上下限会压成同一个数 —— 实测"不管悬停哪一格横向恒为 132px"。
+if (source.includes("const width = Math.max(box.width, 264);")) {
+	throw new Error("showTip must not clamp against the sidebar width alone (the tip gets pinned)");
+}
+// ③ 半宽被加了两次：showTip 先把半宽算进边界、useLayoutEffect 又加一次，小窗被推离格子 ~130px
+//    （实测 offsetLeft 271/206/307，而状态里的正确值是 161.7/139/336.6）。半宽只在 fitTipX 里加。
+if (!source.includes("function fitTipX(center, min, max, half)") || !source.includes("x: fitTipX(center, min, max, half),") || !source.includes("const x = fitTipX(tip.center, tip.min, tip.max, half);")) {
+	throw new Error("the tooltip half-width must be applied exactly once, inside fitTipX");
+}
+if (source.includes("Math.max(tip.min + half, tip.max - half)")) {
+	throw new Error("the tooltip half-width is being applied twice again");
+}
+// 滚动只收起小窗，**不做**任何降低清晰度的遮罩/渐隐（用户明确要求去掉：
+// "不需要添加滚动降低清晰度的显示效果"）。曾经存在的 data-scroll mask 不得回归。
+if (!source.includes("\t\t\t\t\t\t\t\tonScroll: hideTip,")) {
+	throw new Error("the body scroll handler must dismiss the tooltip");
+}
+if (source.includes("data-scroll") || source.includes("mask-image") || source.includes("syncScrollHint")) {
+	throw new Error("the scroll fade mask must stay removed (the user does not want dimming on scroll)");
+}
+// 小窗是绝对定位盒，夹取把它推出容器后可用宽度会变负、收缩宽度塌成"每个词一行"
+// （实测一天详情被折成 4 行）。用 max-content 拿回宽度。
+if (!source.includes('".usg_tip{position:absolute;z-index:40;pointer-events:none;width:max-content;max-width:260px;')) {
+	throw new Error("the tooltip must size from its own content (width:max-content) or it gets squeezed");
+}
+// 夹取半宽必须是**实测**值：按"最宽 264px"保守假设会让首尾两列提前停住，看着仍像没跟随。
+if (!source.includes("const half = tipHalfRef.current;") || !source.includes("const half = node.offsetWidth / 2;")) {
+	throw new Error("the tooltip clamp must use the measured width, not the maximum assumed width");
+}
+// 面板 overflow:hidden：贴顶那一行的小窗要翻到下方，否则被切。
+if (!source.includes('node.dataset.side = flip ? "below" : "above";') || !source.includes('".usg_tip[data-side=below]{transform:translate(-50%,0);animation-name:usg-tip-in-below}"')) {
+	throw new Error("the tooltip must flip below the anchor when there is no room above");
+}
+
 // ---- P2：材质阶梯 / 语义色 / 令牌收敛 / 分层 / 无障碍 --------------------------
-// 玻璃配方：每档 = 底色 + 白色罩面（veil），且越靠里的表面越实。
-const ladderPattern = /--usg-mat-1:(\d+)%;--usg-mat-1-veil:[^;]+;--usg-mat-2:(\d+)%;--usg-mat-2-veil:[^;]+;--usg-mat-3:(\d+)%;--usg-mat-3-veil:[^;]+;--usg-mat-4:(\d+)%;/;
-const ladders = [...source.matchAll(new RegExp(ladderPattern, "g"))];
+// 液态玻璃配方（拟态，见 拟态液态玻璃技术方案.md）：厚度来自边缘而非模糊。
+// 阶梯 = 压暗 scrim 由外向内单调（越靠里的表面越实，保证数字可读）。
+// 一份完整配方 = 四个 scrim + blur 在**同一条规则**里（`[^}]` 保证不跨规则匹配，
+// 这样 @supports / reduced-transparency 的降级块不会被当成配方）。
+const ladderPattern = /--usg-glass-scrim-1:(\d+)%[^}]*?--usg-glass-scrim-2:(\d+)%[^}]*?--usg-glass-scrim-3:(\d+)%[^}]*?--usg-glass-scrim-4:(\d+)%[^}]*?--usg-glass-blur:/g;
+const ladders = [...source.matchAll(ladderPattern)];
 if (ladders.length !== 3) throw new Error(`expected the dark ladder + both light copies (media query + data-usg-scheme), found ${ladders.length}`);
 for (const ladder of ladders) {
-	const fills = [1, 2, 3, 4].map((index) => Number(ladder[index]));
-	if (!(fills[0] < fills[1] && fills[1] < fills[2] && fills[2] < fills[3])) {
-		throw new Error(`the material ladder must get more opaque inwards, got ${fills.join(" < ")}`);
+	const scrims = [1, 2, 3, 4].map((index) => Number(ladder[index]));
+	if (!(scrims[0] < scrims[1] && scrims[1] < scrims[2] && scrims[2] < scrims[3])) {
+		throw new Error(`the material ladder must get more opaque inwards, got ${scrims.join(" < ")}`);
 	}
 }
-for (const fragment of ["--usg-mat-grain:url(", "feTurbulence", "var(--usg-mat-1-veil)", "var(--usg-mat-3-veil)", "var(--usg-mat-blur-1)", "--usg-mat-shadow"]) {
-	if (!source.includes(fragment)) throw new Error(`missing material token: ${fragment}`);
+// 关键参数：模糊必须做小（文档区间 4–8px；超过 10px 就退化成磨砂）。
+const blurToken = /--usg-glass-blur:(\d+(?:\.\d+)?)px/.exec(source);
+if (blurToken === null) throw new Error("missing --usg-glass-blur");
+const blurRadius = Number(blurToken[1]);
+if (!(blurRadius >= 4 && blurRadius <= 8)) throw new Error(`panel blur ${blurRadius}px must stay inside the 4-8px band`);
+for (const fragment of [
+	// ① 定向内阴影：左上受光边 / 右下弱反射 / 边缘渗光
+	"inset 1px 1px 0 var(--usg-glass-lit)", "inset -1px -1px 1.5px var(--usg-glass-reflect)", "inset 0 0 26px var(--usg-glass-bleed)",
+	// ② mask-composite 渐变描边（border 承载不了渐变，必须用 mask）
+	"mask-composite:exclude", "-webkit-mask-composite:xor", "linear-gradient(160deg,var(--usg-glass-edge-1)",
+	// ③ 贴顶柔光
+	"mix-blend-mode:screen", "--usg-glass-topglow:radial-gradient(150% 88% at 50% -34%",
+	"--usg-glass-shadow"
+]) {
+	if (!source.includes(fragment)) throw new Error(`missing liquid-glass layer: ${fragment}`);
 }
-// 固定显示比例：面板尺寸不随屏幕大小变化（用户要求"固定比例、各屏一致"），
-// 只保留窄窗口不溢出的兜底；不得再出现按视口放大或整体 zoom 的写法。
+// 受光边必须明显亮于弱反射（文档：弱反射 .10–.20 且"须明显低于左上，否则反物理"），
+// 描边环则要上亮下暗（edge-1 亮于 edge-4）。
+for (const index of ["1", "3"]) {
+	const lit = new RegExp(`--usg-glass-lit-${index}:rgb\\(255 255 255 / (\\d+)%\\)`).exec(source);
+	const reflect = new RegExp(`--usg-glass-reflect-${index}:rgb\\(255 255 255 / (\\d+)%\\)`).exec(source);
+	if (lit === null || reflect === null) throw new Error(`missing edge-alpha tokens for tier ${index}`);
+	if (Number(lit[1]) < Number(reflect[1]) * 2) {
+		throw new Error(`tier ${index}: the lit edge (${lit[1]}%) must clearly exceed the reflection (${reflect[1]}%)`);
+	}
+}
+const ringStart = /--usg-glass-edge-1:rgb\(255 255 255 \/ (\d+)%\)/.exec(source);
+const ringEnd = /--usg-glass-edge-4:rgb\(255 255 255 \/ (\d+)%\)/.exec(source);
+if (ringStart === null || ringEnd === null || Number(ringStart[1]) <= Number(ringEnd[1])) {
+	throw new Error("the gradient border must stay brighter at the top-left than at the bottom-right");
+}
+// 材质规则不写 position：同特异性下会把 sticky 顶栏覆盖成 relative（文档踩过）。
+const glassGroup = /\.usg_panel,\.usg_accountCard,[^{]*\{([^}]*)\}/.exec(source);
+if (glassGroup === null) throw new Error("the shared glass-surface rule is missing");
+if (glassGroup[1].includes("position:")) throw new Error("the material rule must not set position (sticky would lose)");
+// 旧配方（大模糊 + 罩面 + 噪点）不许残留。
+for (const gone of ["--usg-mat-", "feTurbulence", "usg-mat-grain", "26vw", "zoom:var(--usg-fs)", "--usg-fs"]) {
+	if (source.includes(gone)) throw new Error(`the frosted recipe must be gone: ${gone}`);
+}
+// 固定显示比例：面板尺寸不随屏幕大小变化（用户要求"固定比例、各屏一致"），只保留窄窗口不溢出的兜底。
 for (const fragment of ["width:440px;max-width:calc(100vw - 24px);max-height:74vh"]) {
 	if (!source.includes(fragment)) throw new Error(`missing fixed-size contract: ${fragment}`);
 }
-for (const gone of ["26vw", "zoom:var(--usg-fs)", "--usg-fs"]) {
-	if (source.includes(gone)) throw new Error(`viewport-driven scaling must be gone: ${gone}`);
-}
 // 面板 + tooltip 各一条规则（含 -webkit- 前缀共 4 处）；卡片与内嵌块不再二次模糊。
-const blurUses = (source.match(/backdrop-filter:blur\(var\(--usg-mat/g) ?? []).length;
+const blurUses = (source.match(/backdrop-filter:blur\(var\(--usg-glass/g) ?? []).length;
 if (blurUses !== 4) throw new Error(`backdrop-filter must stay on exactly two surfaces (panel + tooltip), found ${blurUses} declarations`);
 if (!source.includes("@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)))")) {
 	throw new Error("the glass surfaces need a no-backdrop-filter fallback");
 }
+if (!source.includes("@supports not (mask-composite:exclude)")) throw new Error("the gradient border needs a plain-border fallback");
 if (!source.includes("prefers-reduced-transparency:reduce")) throw new Error("reduced-transparency must be honoured");
+// 交互：按压反馈 + 滚动收起小窗。滚动遮罩与刷新扫光都已按用户要求删除
+// （"不需要添加滚动降低清晰度的显示效果"），两条反向断言防止回归。
+for (const fragment of [".usg_cell:active", "onScroll: hideTip"]) {
+	if (!source.includes(fragment)) throw new Error(`missing interaction contract: ${fragment}`);
+}
+if (/usg-sheen|data-refreshing/.test(source)) throw new Error("the refresh sheen must stay removed");
+if (/data-scroll|mask-image|syncScrollHint/.test(source)) throw new Error("the scroll fade must stay removed");
+if (/\.usg_glass[^,{]*(hover|active)/.test(source)) throw new Error("glass surfaces must not carry pointer-following highlight states");
 // 右上角三个图标不再挂 DSH Tooltip（在固定定位的面板里会飘到热力图上方）。
 if (source.includes("primitives.Tooltip")) throw new Error("the header icons must not use the primitives tooltip");
-console.log("material ladder ok:", ladders.length, "recipes,", blurUses / 2, "blurred surfaces (panel + tooltip)");
+console.log("material ladder ok:", ladders.length, "recipes, blur", `${blurRadius}px,`, blurUses / 2, "blurred surfaces (panel + tooltip)");
 
 // 死代码清掉；圆角/字重收敛（面板 16 / 卡片 12 / 控件 8，字重只留 600·700）。
 for (const gone of ["usg_balanceCard", "card-strong", "border-radius:18px", "border-radius:14px", "font-weight:550", "font-weight:650"]) {

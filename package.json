@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-stats",
   "description": "DeepSeek token usage heatmap, account balance, and platform usage for the dsh web GUI",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "repository": {
     "type": "git",
