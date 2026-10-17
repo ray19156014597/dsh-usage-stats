@@ -85,7 +85,7 @@ async function testConfigValidation(root) {
 		settings: { get: () => void 0 }
 	});
 	await plugin.apply(context, { usageTokenRef: "DEEPSEEK_USAGE_TOKEN" }, { disableBackgroundRefresh: true });
-	assert.equal(routes.size, 7, "the DeepSeek-only plugin must register exactly seven routes");
+	assert.equal(routes.size, 8, "the DeepSeek-only plugin must register exactly eight routes");
 	assert.deepEqual(await plugin.deepseekProvider(context), {
 		id: "deepseek-official",
 		displayName: "DeepSeek",
@@ -359,10 +359,86 @@ async function testPersistedListingFailure(root) {
 	assert.equal(pruned.total.tokens, 0, "a session missing from a successful listing must be pruned");
 }
 
+async function testSessionCostRoute(root) {
+	const home = join(root, "session-cost");
+	const plugin = await freshModule("sessioncost", home);
+	const beijing = (year, month, day, hour, minute = 0) => Date.UTC(year, month - 1, day, hour, minute) - 8 * 3600 * 1000;
+	const usageEventAt = (seq, tokens, time, turn) => ({
+		seq,
+		type: "assistant/message",
+		time,
+		data: {
+			turn,
+			step: 0,
+			usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: tokens, cacheWriteTokens: 0 },
+			message: { source: { model: "deepseek-flash" } }
+		}
+	});
+	// Oct 18 02:00 / 02:30 are both off-peak (Sunday / outside peak windows), so
+	// 1M + 2M cache-hit tokens cost 0.02 + 0.04 CNY; the child session was created
+	// at 02:31, i.e. during turn 2, so its 0.02 CNY belongs to turn 2.
+	const mainEvents = [
+		usageEventAt(1, 1000000, beijing(2026, 10, 18, 2, 0), 1),
+		usageEventAt(2, 2000000, beijing(2026, 10, 18, 2, 30), 2)
+	];
+	const childEvents = [usageEventAt(1, 1000000, beijing(2026, 10, 18, 2, 31), 1)];
+	const sessions = [{ id: "session-main", header: { id: "session-main", delegationDepth: 0 }, events: mainEvents }];
+	const persistence = {
+		listSnapshots: async () => [{ header: { id: "session-child", parentSession: "session-main", origin: "subagent", delegationDepth: 1, createdAt: beijing(2026, 10, 18, 2, 31) }, revision: 7 }],
+		readFrom: async (id, fromSeq) => ({ events: id === "session-child" ? childEvents.filter((event) => event.seq >= fromSeq) : [] })
+	};
+	const routes = new Map();
+	await plugin.apply(makeContext({ sessions: { list: () => sessions }, persistence, routes }), {}, { disableBackgroundRefresh: true });
+	const handler = routes.get(plugin.SESSION_COST_PATH);
+	assert.equal(typeof handler, "function", "the session cost route must be registered");
+	const request = (sessionId) => ({ method: "GET", url: `${plugin.SESSION_COST_PATH}?sessionId=${sessionId}`, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } });
+
+	const response = makeResponse();
+	await handler(request("session-main"), response);
+	assert.equal(response.status, 200);
+	const payload = JSON.parse(response.body);
+	assert.equal(payload.ok, true);
+	assert.equal(payload.total.tokens, 4000000);
+	assert.equal(payload.total.cacheHitRate, 100);
+	assert.equal(payload.main.cost, 0.06);
+	assert.equal(payload.subagents.count, 1, "the subagent child session must be included");
+	assert.equal(payload.subagents.cost, 0.02);
+	assert.equal(payload.subagents.tokens, 1000000);
+	assert.equal(payload.total.cost, 0.08);
+	assert.equal(payload.total.idleTokens, 4000000);
+	// Per-turn rows drive the "本轮用量" dialog: turn 2 owns the child session cost.
+	assert.equal(payload.turns.length, 2);
+	assert.equal(payload.turns[0].turn, 1);
+	assert.equal(payload.turns[0].totalCost, 0.02);
+	assert.equal(payload.turns[0].subagentSessions, 0);
+	assert.equal(payload.turns[1].turn, 2);
+	assert.equal(payload.turns[1].mainCost, 0.04);
+	assert.equal(payload.turns[1].subagentSessions, 1);
+	assert.equal(payload.turns[1].subagentCost, 0.02);
+	assert.equal(payload.turns[1].totalCost, 0.06);
+
+	// Unknown / empty ids and foreign callers are refused before any fold.
+	const missing = makeResponse();
+	await handler(request("session-nope"), missing);
+	assert.equal(missing.status, 404);
+	const invalid = makeResponse();
+	await handler({ method: "GET", url: plugin.SESSION_COST_PATH, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, invalid);
+	assert.equal(invalid.status, 400);
+	const foreign = makeResponse();
+	await handler({ ...request("session-main"), socket: { remoteAddress: "203.0.113.7" } }, foreign);
+	assert.equal(foreign.status, 403);
+
+	// A second poll must serve the cached (incremental) fold: same numbers.
+	const second = makeResponse();
+	await handler(request("session-main"), second);
+	assert.equal(JSON.parse(second.body).total.cost, 0.08);
+}
+
 const root = await mkdtemp(join(tmpdir(), "dsh-usage-stats-"));
 try {
 	await testRouteFence(root);
 	await testConfigValidation(root);
+	await testSessionCostRoute(root);
 	await testBackgroundRefresh(root);
 	await testPersistedToLive(root);
 	await testRevisionRewrite(root);

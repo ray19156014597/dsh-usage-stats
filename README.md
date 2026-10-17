@@ -39,7 +39,8 @@ DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Har
 | ⌨️ | 顺手交互 | **首屏一屏放下**：余额 + 6 格统计 + 当月日历，最近 14 天/平台模型/按 API Key 折叠在下方；侧边栏渲染即预热数据，首次打开直接出热力图；面板自徽标处展开、关闭带退场动效；下钻视图带方向推入，`Esc` 逐级返回；刷新按钮转圈并把“更新于 hh:mm”换成“刷新中…”（右上角三个图标不带悬浮气泡，语义由 `aria-label` 承载）；热力图格子用面板自绘 tooltip，支持**方向键/Home/End/PageUp/PageDown** 在日历里移动，整块日历只占一个 Tab 停靠点 |
 | 🎨 | 语义化配色 | 消费走琥珀、Token 走蓝、缓存命中走青绿：6 格统计条按类别着色，日详情的环形图与占比条用同一套令牌（不再是“一片蓝”） |
 | 🪟 | 统计弹层玻璃材质 | DSH 输入框统计条（轮次/tok/s、Token 用量、上下文占用）和每轮「用量 X tok」点开后的弹层，套用插件同款液态玻璃（底色 + 方向性内阴影 + 淡描边 + 顶边高光，4px/1.9 模糊；描边与受光取淡档）；**统计条本身保持 DSH 原样**，不改颜色、字体或间距 |
-| 🔒 | 本机安全边界 | 七个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
+| 💰 | 费用统计（本轮 / 会话） | 统计条 Token 用量处就地追加「· ¥80.05」（会话总花费，含 subagent）；「本轮用量」弹层加「本轮费用」，「Token 用量」弹层加「会话总费用」。按官方价目逐请求折算（含峰谷与历史调价），子代理按创建时间归属到轮次 |
+| 🔒 | 本机安全边界 | 八个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
 
 界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。侧边栏一渲染就会静默预热账户、Token 聚合与平台用量，所以面板首次打开即可显示完整内容；若在预热完成前打开，才短暂显示骨架占位。手动刷新会强制服务端重新聚合 Token 用量，并更新余额与平台用量。动效遵守系统的“减少动态效果”设置；小时用量图与环形图附带读屏摘要，余额与“更新于”通过 `aria-live` 播报。
 
@@ -174,6 +175,21 @@ credentials 文件中的引用，其次才用面板保存的值。未配置时�
 - 只改材质，不改 DSH 的 DOM/类名/内容；弹层定位与点击行为仍由 DSH 负责，无 `backdrop-filter` 或开启“减少透明度”时退回接近不透明的表面。
 - 浏览器控制台无报错；插件热重载时样式表会原地更新（不会残留上一版规则）。
 
+## 费用统计 / Cost per turn & per session
+
+在 DSH 原生界面上就地补两处金额，**不重绘统计条、不加新药丸**：
+
+- **统计条**：Token 用量药丸末尾追加 `· ¥80.05`（与原生药丸同字体/同色/同分隔符，仅在金额就绪后出现；悬停提示写明“会话总费用 · 按官方价目估算”）。金额是**当前会话总花费，含全部 subagent 子会话**。
+- **本轮用量弹层**：在 DSH 自己的 `dl` 末尾插一行「本轮费用」= 该轮主会话消耗 + 该轮创建的子代理会话（按子会话 `createdAt` 落在哪一轮的时间窗归属）。弹层顶部原有的 Token 明细不变。
+- **Token 用量弹层**：同样插一行「会话总费用」，与统计条金额一致。
+
+口径与实现：
+
+- 逐请求按官方价目表折算（缓存命中 / 未命中 / 输出；缓存写入按未命中价），覆盖 2026-08-17 峰谷上线、08-23 周末全天空闲、09-10 12:00 Flash 降价、10-17 新模型同价，09-19 起调休/节假日按空闲；峰谷按请求时间（北京时间）判定。
+- 宿主端 `GET /api/usage-stats/session?sessionId=…` 返回 `total`（会话合计）、`main`、`subagents`、`models` 与 **`turns`**（逐轮费用，含 `mainCost` / `subagentCost` / `totalCost`）。逐会话增量折叠缓存，轮询开销只与新增事件有关。
+- 客户端只做“取数 + 在 DSH 既有节点上补数字”：`MutationObserver` 监听 DSH 重渲染并补回被替换的节点；会话切换、token 投影变化（600ms 防抖）立即取数，页面可见时每 20s 轮询一次（子代理用量不进父会话投影）。
+- 估算而非账单：实际扣费以 platform.deepseek.com 账单为准；用于核对时，整日仅含本会话的日期与平台账单完全一致。
+
 ## Agent 友好安装 / Agent-friendly installation
 
 <details>
@@ -219,7 +235,7 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 - API Key、Cookie 与用量 Token 不会进入浏览器响应、插件缓存或日志。
 - 余额请求固定使用 HTTPS、不跟随重定向，响应体上限为 1 MiB；上游地址禁止内嵌 username/password，凭据只在服务端按 credential ref 注入请求头。
 - 余额请求在发凭据前会校验域名的全部 IPv4/IPv6 解析结果并固定连接地址，防止 DNS rebinding 绕过私网限制。唯一例外是 **本地代理的 fake-ip 占位地址**（`198.18.0.0/15`，Clash / Mihomo / Surge / iKuuu 等客户端对所有域名都返回这一段的地址，再按 SNI 自行转发）：它无法指向内网服务，因此按解析结果放行并照常固定连接；但把该地址直接写进配置（`https://198.18.0.5`）仍然拒绝。域名解析到真正的内网地址时按"暂时不可用"处理，保留上一次余额并显示解析结果。
-- 七个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中五个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。有副作用的请求（保存/清除 Token、启动或取消登录同步）还会校验同源 `Origin`、`Sec-Fetch-Site`，并要求带 body 的请求使用 `application/json`；不带 `Origin` 的本机工具调用（curl、PowerShell）保持放行。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
+- 八个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中六个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。有副作用的请求（保存/清除 Token、启动或取消登录同步）还会校验同源 `Origin`、`Sec-Fetch-Site`，并要求带 body 的请求使用 `application/json`；不带 `Origin` 的本机工具调用（curl、PowerShell）保持放行。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
 - 用量缓存 `~/.dsh/storages/usage-stats-cache.json` 只保存聚合 Token、会话 id、不透明 revision 与折叠游标，不保存提示词、回复或文件路径。
 - DeepSeek 平台用量 Token 只在服务端解析并用于请求 `platform.deepseek.com`，平台用量结果按月份在内存中缓存五分钟（历史月份 30 分钟），不落盘、不出现在响应中；缓存按凭据身份隔离，换 Token 或清除 Token 会立即失效月/日/累计缓存。
 - 会话列表读取失败时不会把“读不到”当成“没有会话”：插件保留上一次的聚合缓存、跳过清理，并在响应里标记 `partial: true`，面板会显示“统计可能不完整”。
@@ -237,12 +253,14 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 - seq 缺口、日志重写或 live/persisted 切换时完整重折叠该会话。
 - 聚合采用 single-flight，并在同一临界区原子保存缓存。
 - `validate:live` 会逐会话比较 raw artifact、`session.history`、插件端点与官方 token projection；缺文件或不一致会返回非零。
+- **费用估算**：逐 `usage` 样本（同 turn/step 替换）× 官方价目表。价目按日期分段：2026-08-17 00:00 前平价（V4-Flash 0.02/1/2、V4-Pro 0.025/3/6 元/百万 tokens），08-17 起峰谷（Flash 空闲 0.05/1.5/4.5、高峰翻倍；Pro 空闲 0.15/4.5/13.5、高峰翻倍），08-23 00:00 起周末全天空闲，09-10 12:00 起 Flash 新价（空闲 0.02/1/4、高峰翻倍；旧模型名同价），10-17 新模型价格不变；09-19 起调休上班周末与法定节假日按空闲。峰谷按请求时间（北京时间）判定。逐轮费用 = 该轮样本费用 + 创建时间落在该轮时间窗内的子代理会话费用。估算已与平台逐日账单核对：整日仅含本会话时完全一致。
 
 ## API
 
 | Method | Path | Response |
 | --- | --- | --- |
 | `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合；会话列表读取失败时带 `partial: true`（保留上次聚合） |
+| `GET` | `/api/usage-stats/session?sessionId=…` | 该会话**连同全部 subagent 子会话**的估算费用：`total`（Token 构成、缓存命中率、请求数、`peak`/`idle`/`flat` 的 Token 与金额、按模型）、`main`、`subagents`（数量/Token/金额/逐子会话）、`turns`（逐轮 `mainCost`/`subagentCost`/`totalCost`）；未知会话 `404`，缺少参数 `400` |
 | `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游；连续瞬时故障时沿用最后一次成功余额并带 `stale: true` |
 | `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新；费用结构缺失时 `costAvailable: false` |
 | `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量（有界窗口）：`scannedMonths` / `range` / `limited` 说明扫描范围与完整性；`refresh=1` 强制重扫各月 |
@@ -261,7 +279,7 @@ npm test
 npm pack --dry-run
 ```
 
-`npm test` 完全离线，覆盖 bundle、客户端渲染与请求竞态、服务端安全边界、DeepSeek 余额适配器、平台用量解析、网页登录自动同步、缓存和安装器幂等性。真实数据验证需先运行 `dsh web`：
+`npm test` 完全离线，覆盖 bundle、客户端渲染与请求竞态、服务端安全边界、DeepSeek 余额适配器、平台用量解析、网页登录自动同步、缓存、**费用引擎（价目分段 / 峰谷 / 替换语义 / 逐轮归属）** 和安装器幂等性。只想跑费用引擎时用 `npm run test:cost`。真实数据验证需先运行 `dsh web`：
 
 ```bash
 npm run validate:live

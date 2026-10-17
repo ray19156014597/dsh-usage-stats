@@ -89,34 +89,59 @@ if (bareMarkup.length < 200 || !bareMarkup.includes("panel.badge")) {
 
 // Apply against a stub client context.
 const registrations = [];
+const slotRegistrations = [];
 const ctx = {
 	effect: () => {},
-	locale: { register: (ns, dict) => { if (ns !== "usageStats") throw new Error(`unexpected ns ${ns}`); if (!dict.zh || !dict.en) throw new Error("missing dictionaries"); } },
-	slots: { inject: (slot, fn) => { registrations.push([slot, fn]); return () => {}; }, register: () => () => {} }
+	locale: {
+		register: (ns, dict) => {
+			if (ns !== "usageStats") throw new Error(`unexpected ns ${ns}`);
+			if (!dict.zh || !dict.en) throw new Error("missing dictionaries");
+			for (const key of ["cost.turnCost", "cost.sessionCost", "cost.estimateHint", "cost.turnSubagents", "cost.containsSubagents"]) {
+				if (typeof dict.zh[key] !== "string" || typeof dict.en[key] !== "string") throw new Error(`missing i18n key ${key}`);
+			}
+		}
+	},
+	slots: {
+		inject: (slot, fn) => { registrations.push([slot, fn]); return () => {}; },
+		register: (registration, component) => { slotRegistrations.push([registration, component]); return () => {}; }
+	}
 };
 exports_.apply(ctx);
-if (registrations.length !== 1) throw new Error("expected one slot injection");
-const [slot, registerFn] = registrations[0];
-if (slot !== "sidebar.footer.action") throw new Error(`unexpected slot ${slot}`);
-const disposer = registerFn();
-if (typeof disposer !== "function") throw new Error("slot registration must return a disposer");
-console.log("apply ok, slot:", slot);
+if (registrations.length !== 2) throw new Error(`expected two slot injections, got ${registrations.length}`);
+const slotNames = registrations.map(([slot]) => slot).sort();
+if (slotNames.join(",") !== "conversation.composer.dock,sidebar.footer.action") {
+	throw new Error(`unexpected slots ${slotNames.join(",")}`);
+}
+for (const [, registerFn] of registrations) {
+	const disposer = registerFn();
+	if (typeof disposer !== "function") throw new Error("slot registration must return a disposer");
+}
+const costBridge = slotRegistrations.find(([registration]) => registration.id === "usage-cost-bridge");
+if (costBridge === void 0) throw new Error("the invisible session-cost bridge must register in the composer dock");
+if (typeof costBridge[1] !== "function") throw new Error("the session-cost bridge must be a component");
+console.log("apply ok, slots:", slotNames.join(" + "));
 
-// 统计条保持 DSH 原样，只把「点击后弹出的统计弹层」换成插件同款液态玻璃。
+// 统计条保持 DSH 原样，只把「点击后弹出的统计弹层」换成插件同款液态玻璃，
+// 并在统计条药丸尾部与弹层里补一行费用数字（不重绘统计条本身）。
 // 反向断言防止再把 composer 统计条整行重绘（用户已明确回退过那次外观改动）。
 if (source.includes("[data-composer-dock]")) throw new Error("the composer stats strip must keep the DSH look");
-if (source.includes('data-usg": "cost"')) throw new Error("the cost pill must not come back");
+if (source.includes('data-usg": "cost"')) throw new Error("the old cost pill must not come back");
 for (const marker of [
 	'dl[data-session-stats-usage]',
 	'dl[data-session-stats-details]',
 	'dl[data-turn-usage-details]',
 	'[class$="_percent"]',
 	"data-usg-scheme",
-	"styleTag.textContent = css"
+	"styleTag.textContent = css",
+	'[data-composer-stat="usage"]',
+	"[data-usg-session-cost]",
+	"[data-turn-tail]",
+	"cost.turnCost",
+	"cost.sessionCost"
 ]) {
-	if (!source.includes(marker)) throw new Error(`missing stat-dialog glass marker: ${marker}`);
+	if (!source.includes(marker)) throw new Error(`missing cost/stat-dialog marker: ${marker}`);
 }
-console.log("stat-dialog glass contract ok (strip untouched, dialogs re-skinned)");
+console.log("stat-dialog glass + cost widget contract ok (strip untouched, dialogs re-skinned, cost rows injected)");
 
 // Render the month heatmap with synthetic per-day data (calendar grid + colors).
 const { MonthHeatmap, DayDetail, buildMonthHeatmap } = exports_;
