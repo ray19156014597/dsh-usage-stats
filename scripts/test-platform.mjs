@@ -421,6 +421,67 @@ async function testPlatformCumulative() {
 	assert.equal(empty.total, 0);
 	assert.equal(empty.months, 0);
 	assert.equal(empty.oldest, null);
+
+	// Older-than-account months answer with a non-JSON body: the walk stops with a
+	// partial result instead of failing the whole total, and complete=true when
+	// every month that has usage was still scanned.
+	const unavailable = () => {
+		const error = new Error("platform API returned invalid JSON");
+		error.providerStatus = "invalid-response";
+		return error;
+	};
+	const tolerant = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 24,
+		monthTotal: async (m, y) => {
+			const key = `${y}-${String(m).padStart(2, "0")}`;
+			const totals = { "2026-10": 10001, "2026-09": 9001, "2026-08": 8001 };
+			if (totals[key] !== void 0) return totals[key];
+			if (key === "2026-02") throw unavailable();
+			return 0;
+		}
+	});
+	assert.equal(tolerant.total, 10001 + 9001 + 8001, "a partial walk must still sum the readable months");
+	assert.equal(tolerant.partial, true, "an unreadable old month must be reported as partial");
+	assert.equal(tolerant.complete, true, "usage coverage is complete when the oldest usage month precedes the stop");
+	assert.equal(tolerant.stoppedAt, "2026-02", "stoppedAt must name the first unreadable month");
+	assert.equal(tolerant.oldest, "2026-08");
+	assert.equal(tolerant.limited, false, "complete usage coverage must not be labelled limited");
+
+	// A failure that is not "no history here" (auth, rate limit, params) still aborts.
+	let authFailed = false;
+	await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 12,
+		monthTotal: async (m, y) => {
+			const key = `${y}-${String(m).padStart(2, "0")}`;
+			if (key === "2026-09") {
+				const error = new Error("unauthorized");
+				error.providerStatus = "unauthorized";
+				throw error;
+			}
+			return 5;
+		}
+	}).catch((error) => {
+		authFailed = error?.providerStatus === "unauthorized";
+	});
+	assert.equal(authFailed, true, "auth failures must still reject the scan");
+
+	// Budget exhaustion marks the result limited (never presented as a lifetime total).
+	const budgetCut = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 12,
+		budgetMs: 1,
+		monthTotal: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			return 1;
+		}
+	});
+	assert.equal(budgetCut.limited, true, "a budget-cut scan must be flagged limited");
+	assert.equal(budgetCut.partial, false, "a budget cut is not an unreadable-history stop");
 	console.log("platform cumulative walk + month sum ok");
 }
 

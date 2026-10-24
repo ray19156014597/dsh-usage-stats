@@ -96,7 +96,10 @@ const ctx = {
 		register: (ns, dict) => {
 			if (ns !== "usageStats") throw new Error(`unexpected ns ${ns}`);
 			if (!dict.zh || !dict.en) throw new Error("missing dictionaries");
-			for (const key of ["cost.turnCost", "cost.sessionCost", "cost.estimateHint", "cost.turnSubagents", "cost.containsSubagents"]) {
+			for (const key of [
+				"cost.turnCost", "cost.sessionCost", "cost.estimateHint", "cost.turnSubagents", "cost.containsSubagents",
+				"usage.totalTokensLocal", "usage.totalTokensUntil", "usage.totalLocalNote", "usage.totalPartialNote"
+			]) {
 				if (typeof dict.zh[key] !== "string" || typeof dict.en[key] !== "string") throw new Error(`missing i18n key ${key}`);
 			}
 		}
@@ -137,7 +140,9 @@ for (const marker of [
 	"[data-usg-session-cost]",
 	"[data-turn-tail]",
 	"cost.turnCost",
-	"cost.sessionCost"
+	"cost.sessionCost",
+	"usage.totalTokensLocal",
+	"usage.totalPartialNote"
 ]) {
 	if (!source.includes(marker)) throw new Error(`missing cost/stat-dialog marker: ${marker}`);
 }
