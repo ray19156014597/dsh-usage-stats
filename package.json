@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-stats",
   "description": "DeepSeek token usage heatmap, account balance, platform usage, per-turn/session cost, and liquid-glass stat dialogs for the dsh web GUI",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "repository": {
     "type": "git",

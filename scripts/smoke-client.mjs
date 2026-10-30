@@ -815,7 +815,7 @@ for (const gone of ["--usg-mat-", "feTurbulence", "usg-mat-grain", "26vw", "zoom
 // 固定显示比例：面板尺寸不随屏幕大小变化（用户要求"固定比例、各屏一致"），只保留窄窗口不溢出的兜底。
 // 高度必须同时夹住视口：只写 74vh 时 844×390 视口里 bottom:128px + 288.6px 会把标题栏顶出屏幕
 // （报告实测面板 y = -26.6px）。
-for (const fragment of ["width:440px;max-width:calc(100vw - 24px);max-height:min(74vh,calc(100vh - 140px))"]) {
+for (const fragment of ["width:clamp(380px,18vw,460px);max-width:calc(100vw - 24px);max-height:min(78vh,calc(100vh - 120px))"]) {
 	if (!source.includes(fragment)) throw new Error(`missing fixed-size contract: ${fragment}`);
 }
 if (source.includes("max-height:74vh")) throw new Error("the panel height must stay clamped to the viewport, not a bare 74vh");
