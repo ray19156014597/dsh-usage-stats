@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-stats",
   "description": "DeepSeek token usage heatmap, account balance, platform usage, per-turn/session cost, and liquid-glass stat dialogs for the dsh web GUI",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "private": true,
   "repository": {
     "type": "git",
@@ -34,7 +34,9 @@
     "./client": "./lib/client.js",
     "./usage": "./lib/usage.js",
     "./package.json": "./package.json",
-    "./cost": "./lib/cost.js"
+    "./cost": "./lib/cost.js",
+    "./price-period": "./lib/price-period.js",
+    "./holidays": "./lib/holidays.js"
   },
   "dsh": {
     "bundle": {
@@ -49,8 +51,8 @@
     }
   },
   "scripts": {
-    "check": "node --check lib/index.js && node --check lib/usage.js && node --check lib/cost.js && node --check lib/balance.js && node --check lib/accounts.js && node --check lib/platform.js && node --check lib/sync.js && node --check lib/client.js && node --check scripts/install.mjs && node --check scripts/smoke-client.mjs && node --check scripts/test-bundle.mjs && node --check scripts/test-install.mjs && node --check scripts/test-server.mjs && node --check scripts/test-accounts.mjs && node --check scripts/test-platform.mjs && node --check scripts/test-sync.mjs && node --check scripts/test-cost.mjs && node --check scripts/validate-fold.mjs && node --check scripts/verify-raw.mjs && node --check scripts/check-balance.mjs",
-    "test": "npm run test:bundle && npm run test:client && npm run test:server && npm run test:accounts && npm run test:platform && npm run test:sync && npm run test:cost && npm run test:install",
+    "check": "node --check lib/index.js && node --check lib/usage.js && node --check lib/cost.js && node --check lib/price-period.js && node --check lib/holidays.js && node --check lib/balance.js && node --check lib/accounts.js && node --check lib/platform.js && node --check lib/sync.js && node --check lib/client.js && node --check scripts/install.mjs && node --check scripts/smoke-client.mjs && node --check scripts/test-bundle.mjs && node --check scripts/test-install.mjs && node --check scripts/test-server.mjs && node --check scripts/test-accounts.mjs && node --check scripts/test-platform.mjs && node --check scripts/test-sync.mjs && node --check scripts/test-cost.mjs && node --check scripts/test-price-period.mjs && node --check scripts/test-holidays.mjs && node --check scripts/validate-fold.mjs && node --check scripts/verify-raw.mjs && node --check scripts/check-balance.mjs",
+    "test": "npm run test:bundle && npm run test:client && npm run test:server && npm run test:accounts && npm run test:platform && npm run test:sync && npm run test:cost && npm run test:price && npm run test:holidays && npm run test:install",
     "test:bundle": "node scripts/test-bundle.mjs",
     "test:client": "node scripts/smoke-client.mjs",
     "test:install": "node scripts/test-install.mjs",
@@ -59,6 +61,8 @@
     "test:platform": "node scripts/test-platform.mjs",
     "test:sync": "node scripts/test-sync.mjs",
     "test:cost": "node scripts/test-cost.mjs",
+    "test:price": "node scripts/test-price-period.mjs",
+    "test:holidays": "node scripts/test-holidays.mjs",
     "validate:live": "node scripts/validate-fold.mjs && node scripts/verify-raw.mjs"
   },
   "devDependencies": {

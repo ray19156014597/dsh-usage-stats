@@ -70,6 +70,25 @@ async function testRouteFence(root) {
 	await routes.get(plugin.ACCOUNT_PATH)({ method: "GET", url: `${plugin.ACCOUNT_PATH}?provider=deepseek-official`, headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, account);
 	assert.equal(account.status, 200);
 	assert.equal(JSON.parse(account.body).account.status, "not-configured");
+
+	// Live peak/idle pricing state: loopback-only, GET-only, no credentials needed.
+	const periodHandler = routes.get(plugin.PRICE_PERIOD_PATH);
+	assert.equal(typeof periodHandler, "function", "the price-period route must be registered");
+	const period = makeResponse();
+	await periodHandler({ method: "GET", headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, period);
+	assert.equal(period.status, 200);
+	const periodBody = JSON.parse(period.body);
+	assert.equal(periodBody.ok, true);
+	assert.ok(["peak", "idle", "flat"].includes(periodBody.period), "period must be peak/idle/flat");
+	assert.equal(typeof periodBody.prices?.flash?.hit, "number", "current Flash price row must be included");
+	assert.equal(periodBody.calendar?.builtin, true, "without a sync the built-in holiday calendar is reported");
+	assert.ok(Array.isArray(periodBody.calendar?.years), "calendar years must be reported");
+	const periodPost = makeResponse();
+	await periodHandler({ method: "POST", headers: { host: "localhost:3080" }, socket: { remoteAddress: "127.0.0.1" } }, periodPost);
+	assert.equal(periodPost.status, 405, "the price-period route is GET-only");
+	const periodForeign = makeResponse();
+	await periodHandler({ method: "GET", headers: { host: "localhost:3080" }, socket: { remoteAddress: "203.0.113.7" } }, periodForeign);
+	assert.equal(periodForeign.status, 403, "the price-period route must stay loopback-only");
 }
 
 async function testConfigValidation(root) {
@@ -85,7 +104,7 @@ async function testConfigValidation(root) {
 		settings: { get: () => void 0 }
 	});
 	await plugin.apply(context, { usageTokenRef: "DEEPSEEK_USAGE_TOKEN" }, { disableBackgroundRefresh: true });
-	assert.equal(routes.size, 8, "the DeepSeek-only plugin must register exactly eight routes");
+	assert.equal(routes.size, 9, "the DeepSeek-only plugin must register exactly nine routes");
 	assert.deepEqual(await plugin.deepseekProvider(context), {
 		id: "deepseek-official",
 		displayName: "DeepSeek",

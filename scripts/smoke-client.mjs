@@ -98,7 +98,8 @@ const ctx = {
 			if (!dict.zh || !dict.en) throw new Error("missing dictionaries");
 			for (const key of [
 				"cost.turnCost", "cost.sessionCost", "cost.estimateHint", "cost.turnSubagents", "cost.containsSubagents",
-				"usage.totalTokensLocal", "usage.totalTokensUntil", "usage.totalLocalNote", "usage.totalPartialNote"
+				"usage.totalTokensLocal", "usage.totalTokensUntil", "usage.totalLocalNote", "usage.totalPartialNote",
+				"price.peak", "price.idle", "price.flat", "price.untilPeak", "price.untilIdle", "price.windows", "price.flashHint", "price.calendarHint", "price.calendarBuiltin"
 			]) {
 				if (typeof dict.zh[key] !== "string" || typeof dict.en[key] !== "string") throw new Error(`missing i18n key ${key}`);
 			}
@@ -142,10 +143,16 @@ for (const marker of [
 	"cost.turnCost",
 	"cost.sessionCost",
 	"usage.totalTokensLocal",
-	"usage.totalPartialNote"
+	"usage.totalPartialNote",
+	"price.untilIdle",
+	"priceChip",
+	"price-period"
 ]) {
 	if (!source.includes(marker)) throw new Error(`missing cost/stat-dialog marker: ${marker}`);
 }
+// Badge 今日数据必须走 todayKey()：裸 `today` 在组件作用域不存在，平台可用时会让整个面板抛错并被卸载。
+if (source.includes("heatDayMap.get(today)") || source.includes("recentPlat?.get(today)")) throw new Error("badge must not reference the undefined `today` variable");
+if (!source.includes("recentPlat?.get(todayKey())")) throw new Error("badge today fallback must use todayKey()");
 console.log("stat-dialog glass + cost widget contract ok (strip untouched, dialogs re-skinned, cost rows injected)");
 
 // Render the month heatmap with synthetic per-day data (calendar grid + colors).

@@ -40,7 +40,9 @@ DeepSeek balance, platform usage, and token-usage analytics for the DeepSeek Har
 | 🎨 | 语义化配色 | 消费走琥珀、Token 走蓝、缓存命中走青绿：6 格统计条按类别着色，日详情的环形图与占比条用同一套令牌（不再是“一片蓝”） |
 | 🪟 | 统计弹层玻璃材质 | DSH 输入框统计条（轮次/tok/s、Token 用量、上下文占用）和每轮「用量 X tok」点开后的弹层，套用插件同款液态玻璃（底色 + 方向性内阴影 + 淡描边 + 顶边高光，4px/1.9 模糊；描边与受光取淡档）；**统计条本身保持 DSH 原样**，不改颜色、字体或间距 |
 | 💰 | 费用统计（本轮 / 会话） | 统计条 Token 用量处就地追加「· ¥80.05」（会话总花费，含 subagent）；「本轮用量」弹层加「本轮费用」，「Token 用量」弹层加「会话总费用」。按官方价目逐请求折算（含峰谷与历史调价），子代理按创建时间归属到轮次 |
-| 🔒 | 本机安全边界 | 八个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
+| ⏱️ | 高峰 / 空闲计费时段 | 「账户与用量」标题行右侧显示状态点 + **高峰价/空闲价** + 距下一次切换的倒计时；悬停显示高峰窗口、当档 Flash/Pro 价与周末/节假日原因。规则与费用估算共用同一套价目表；**法定节假日自动同步（周更，离线回退内置表）** |
+| 🧾 | 侧栏徽标（今日） | 侧栏「用量/余额」右侧同时显示**今日消费 ¥3.43** 与**今日 Tokens 71,545,178**；金额取平台口径（与账户卡同源），不可用/为零时只显示 Tokens；rail 图标态放进 tooltip |
+| 🔒 | 本机安全边界 | 九个端点仅接受回环请求；凭据只在服务端解析并发往校验后的 DeepSeek 地址 |
 
 界面支持中文和英文。浏览器只请求 DeepSeek 账户与本地聚合数据；后台刷新与面板是否打开无关。侧边栏一渲染就会静默预热账户、Token 聚合与平台用量，所以面板首次打开即可显示完整内容；若在预热完成前打开，才短暂显示骨架占位。手动刷新会强制服务端重新聚合 Token 用量，并更新余额与平台用量。动效遵守系统的“减少动态效果”设置；小时用量图与环形图附带读屏摘要，余额与“更新于”通过 `aria-live` 播报。
 
@@ -190,6 +192,36 @@ credentials 文件中的引用，其次才用面板保存的值。未配置时�
 - 客户端只做“取数 + 在 DSH 既有节点上补数字”：`MutationObserver` 监听 DSH 重渲染并补回被替换的节点；会话切换、token 投影变化（600ms 防抖）立即取数，页面可见时每 20s 轮询一次（子代理用量不进父会话投影）。
 - 估算而非账单：实际扣费以 platform.deepseek.com 账单为准；用于核对时，整日仅含本会话的日期与平台账单完全一致。
 
+## 高峰 / 空闲计费时段 / Peak & idle price indicator（v0.9.2）
+
+指示器**不占独立模块**：它嵌在「账户与用量」标题行的右侧空白处，与标题同一行、同一套 11px tertiary 排版，只在最左侧多一个状态圆点：
+
+- 圆点 + 状态：**高峰价**（琥珀）/ **空闲价**（绿）/ **平价**（2026-08-17 前的价目表）；
+- 状态右侧倒计时：`距空闲 1h17m` / `距高峰 2d 10h`，跨过切换点后本地立即翻转，不依赖下一次轮询；
+- 悬停整条：当档 Flash / Pro 价（命中/未命中/输出，元 / 百万 tokens）、高峰窗口（09:00–12:00、14:00–18:00，北京时间）、“周末全天空闲 / 节假日全天空闲”的原因，以及节假日日历的同步日期。
+
+数据来自新端点 `GET /api/usage-stats/price-period`（回环 only、GET only、不需要任何凭据）：宿主端用与费用估算**完全相同**的 `lib/cost.js` 规则算出当前时段、当前价格行与下一次切换时刻（30 秒缓存；面板 30 秒轮询、15 秒刷新倒计时）。规则覆盖 8/17 峰谷上线、8/23 周末全天空闲、9/10 12:00 Flash 降价、10/17 同价、节假日/调休安排；工作日 09:00–12:00 与 14:00–18:00 为高峰，其余为空闲。
+
+**节假日自动同步（v0.9.2）**：`lib/holidays.js` 会在插件启动后、以及每 12 小时把当前年 ±1（含上一年，供历史费用估算）的法定节假日从公开日历接口同步到 `<DSH_HOME>/storages/usage-stats-holidays.json`，再喂给 `cost.js` 的 `setHolidayCalendar()`。因此日历、指示灯与费用估算**共用同一份自动更新的假日表**：
+
+- 数据源按顺序尝试 `timor.tech` → `api.jiejiariapi.com`；只发送年份、不带任何凭据；
+- 当前年及下一年每 7 天刷新一次（官方调休公告随时可能更新），更早年份视为不变、只取一次；
+- 无网络/两源都失败时沿用本地缓存；再退到内置 2026 假日表——**只会漏掉"新公告"，不会丢掉已知假日**；
+- 同步结果（来源/日期/假日数）随 `price-period` 返回，悬停提示里能看到"节假日日历自动同步于 …"。
+
+不修改输入框统计条，也不影响 DSH 原生弹层；指示器只做只读展示，窄宽下倒计时自动省略，状态文字始终可见。
+
+## 侧栏徽标：今日金额 + 今日 Tokens（v0.9.2）
+
+侧栏底部的「用量/余额」徽标不再只显示今日 token：右侧一组数字同时给出**今日消费金额**与**今日 Tokens**，例如 `¥3.43  71,545,178`。
+
+- 金额取平台「今日消费」（`platform.days` 的当日 `totalCost`，与账户卡同源，非本地估算）；颜色用插件费用色（琥珀），Tokens 保持 tertiary，字号 11/12px。
+- 只在平台日数据可用且金额 > 0 时显示金额；平台未配置或费用接口异常时只显示 Tokens，**不会显示 ¥0.00**。
+- 徽标始终跟"今天"，不跟当前查看的月份：正常取当月平台日数据；翻到其它月份时用最近 14 天的平台缓存（`recentPlat`）兜底；平台不可用才回退本地当日合计。
+- rail（窄侧栏图标态）不显示数字，tooltip 同时给出「今日 Tokens … · 今日消费 …」。
+- 布局：金额与 Tokens 组成右对齐的一组（`margin-left:auto`），窄侧栏优先省略标签文字而不是数字。
+- **修复（v0.9.2）**：徽标读取今日数据时误用了不存在的 `today` 变量（`todayKey()` 的局部变量只存在于回调/resize 作用域）。只要平台数据可用（`platformActive` 为真）就会抛 `ReferenceError`，导致整个面板组件被 React 错误边界卸载、侧栏徽标消失——现已改为直接调用 `todayKey()`。
+
 ## 累计 Tokens 口径修复（v0.9.1，2026-10-24）
 
 - **现象**：插件「累计 Tokens」显示 3.2B，桌面独立版同位置显示 11.2B（本月/今日/消费/API 请求两边一致）。
@@ -245,9 +277,10 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 - API Key、Cookie 与用量 Token 不会进入浏览器响应、插件缓存或日志。
 - 余额请求固定使用 HTTPS、不跟随重定向，响应体上限为 1 MiB；上游地址禁止内嵌 username/password，凭据只在服务端按 credential ref 注入请求头。
 - 余额请求在发凭据前会校验域名的全部 IPv4/IPv6 解析结果并固定连接地址，防止 DNS rebinding 绕过私网限制。唯一例外是 **本地代理的 fake-ip 占位地址**（`198.18.0.0/15`，Clash / Mihomo / Surge / iKuuu 等客户端对所有域名都返回这一段的地址，再按 SNI 自行转发）：它无法指向内网服务，因此按解析结果放行并照常固定连接；但把该地址直接写进配置（`https://198.18.0.5`）仍然拒绝。域名解析到真正的内网地址时按"暂时不可用"处理，保留上一次余额并显示解析结果。
-- 八个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中六个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。有副作用的请求（保存/清除 Token、启动或取消登录同步）还会校验同源 `Origin`、`Sec-Fetch-Site`，并要求带 body 的请求使用 `application/json`；不带 `Origin` 的本机工具调用（curl、PowerShell）保持放行。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
+- 九个端点仅接受回环请求，并同时校验 peer socket 与 Host；其中七个只接受 `GET`，`platform/token` 与 `platform/sync` 额外接受 `POST`/`DELETE`。有副作用的请求（保存/清除 Token、启动或取消登录同步）还会校验同源 `Origin`、`Sec-Fetch-Site`，并要求带 body 的请求使用 `application/json`；不带 `Origin` 的本机工具调用（curl、PowerShell）保持放行。支持 IPv4、IPv4-mapped IPv6 和 `[::1]:port`。
 - 用量缓存 `~/.dsh/storages/usage-stats-cache.json` 只保存聚合 Token、会话 id、不透明 revision 与折叠游标，不保存提示词、回复或文件路径。
 - DeepSeek 平台用量 Token 只在服务端解析并用于请求 `platform.deepseek.com`，平台用量结果按月份在内存中缓存五分钟（历史月份 30 分钟），不落盘、不出现在响应中；缓存按凭据身份隔离，换 Token 或清除 Token 会立即失效月/日/累计缓存。
+- 节假日日历同步（v0.9.2）会访问公开日历接口 `timor.tech` / `api.jiejiariapi.com`，只发送年份（`/<year>`），不携带任何凭据、账户信息或本地用量；结果只含日期字符串，缓存在 `~/.dsh/storages/usage-stats-holidays.json`。离线时完全不影响指示灯与费用估算（使用缓存 + 内置 2026 表）。
 - 会话列表读取失败时不会把“读不到”当成“没有会话”：插件保留上一次的聚合缓存、跳过清理，并在响应里标记 `partial: true`，面板会显示“统计可能不完整”。
 - 平台费用接口返回 200 但缺少费用结构时，响应带 `costAvailable: false`，面板把所有金额位显示为“—”，不会把“费用不可用”显示成 ¥0.00。
 
@@ -273,6 +306,7 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 | `GET` | `/api/usage-stats/session?sessionId=…` | 该会话**连同全部 subagent 子会话**的估算费用：`total`（Token 构成、缓存命中率、请求数、`peak`/`idle`/`flat` 的 Token 与金额、按模型）、`main`、`subagents`（数量/Token/金额/逐子会话）、`turns`（逐轮 `mainCost`/`subagentCost`/`totalCost`）；未知会话 `404`，缺少参数 `400` |
 | `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游；连续瞬时故障时沿用最后一次成功余额并带 `stale: true` |
 | `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新；费用结构缺失时 `costAvailable: false` |
+| `GET` | `/api/usage-stats/price-period` | 当前计费时段：`period`（peak/idle/flat）、`reason`（peak-window/off-window/weekend/holiday/flat）、`windows`、`prices.flash/pro`（命中/未命中/输出，元每百万）、`next`（下一次切换的时刻与目标时段）、`calendar`（节假日日历来源/同步时间/年份/假日数）；只读、无需凭据 |
 | `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量（有界窗口）：`scannedMonths` / `range` / `limited` 说明扫描范围与完整性；`refresh=1` 强制重扫各月 |
 | `GET` | `/api/usage-stats/platform/day?date=YYYY-MM-DD&refresh=1` | 某一天的逐小时用量与按 API Key 明细；`refresh=1` 绕过五分钟缓存 |
 | `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/token` | 用量 Token 设置（状态/保存/清除；Token 本身永不返回浏览器） |
@@ -289,7 +323,7 @@ npm test
 npm pack --dry-run
 ```
 
-`npm test` 完全离线，覆盖 bundle、客户端渲染与请求竞态、服务端安全边界、DeepSeek 余额适配器、平台用量解析、网页登录自动同步、缓存、**费用引擎（价目分段 / 峰谷 / 替换语义 / 逐轮归属）** 和安装器幂等性。只想跑费用引擎时用 `npm run test:cost`。真实数据验证需先运行 `dsh web`：
+`npm test` 完全离线，覆盖 bundle、客户端渲染与请求竞态、服务端安全边界、DeepSeek 余额适配器、平台用量解析、网页登录自动同步、缓存、**费用引擎（价目分段 / 峰谷 / 替换语义 / 逐轮归属）**、**计费时段指示（工作日/午休/周末/节假日/边界分钟/平价时代）**、**节假日同步（解析/缓存/双源回退/过期策略）** 和安装器幂等性。只想跑费用引擎时用 `npm run test:cost`；只跑时段规则用 `npm run test:price`；只跑节假日同步用 `npm run test:holidays`。真实数据验证需先运行 `dsh web`：
 
 ```bash
 npm run validate:live
