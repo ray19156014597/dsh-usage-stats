@@ -539,10 +539,10 @@ if (recentDaysOf(null, recentLocalDays, "2026-08-23", "2026-09-05").length !== 5
 if (recentDaysOf(recentPlatMap, recentLocalDays, "2026-09-01", "2026-09-05").length !== 2) throw new Error("recent list must be clipped to the 14-day window");
 console.log("recent-14-days source unification ok (platform wins, local fills gaps):", recentDates.join(", "));
 
-// Settings view: web-login auto-sync (method 1) + token management (method 2).
+// Settings view: web-login sync + token management + collapsed how-to + version line.
 const { TokenSettingsView } = exports_;
 const settingsMarkup = renderToStaticMarkup(react.createElement(TokenSettingsView, {
-	status: { configured: true, source: "stored" },
+	status: { configured: true, source: "stored", version: "0.9.3" },
 	busy: false,
 	message: "saved",
 	value: "",
@@ -557,7 +557,16 @@ const settingsMarkup = renderToStaticMarkup(react.createElement(TokenSettingsVie
 	translate: (key, params) => (params?.message !== void 0 ? `${key}:${params.message}` : params?.cost !== void 0 ? `${key}:${params.cost}` : params?.source !== void 0 ? `${key}:${params.source}` : key)
 }));
 if (!settingsMarkup.includes("token.title") || !settingsMarkup.includes("token.save") || !settingsMarkup.includes("token.clear")) throw new Error("settings view missing token management controls");
-if (!settingsMarkup.includes("token.method1") || !settingsMarkup.includes("token.syncButton")) throw new Error("settings view missing the web-login auto-sync method");
+if (!settingsMarkup.includes("token.syncButton")) throw new Error("settings view missing the web-login sync button");
+if (settingsMarkup.includes("token.method1") || settingsMarkup.includes("token.method2")) throw new Error("settings view must not render the old method headings");
+if (!settingsMarkup.includes("token.help") || !settingsMarkup.includes("token.howToGet")) throw new Error("settings view must keep the collapsed how-to");
+if (!settingsMarkup.includes("settings.version") || !settingsMarkup.includes("0.9.3")) throw new Error("settings view must show the plugin version");
+if (!settingsMarkup.includes("usg_settingsVersion")) throw new Error("version line needs its own class");
+if (!settingsMarkup.includes("<details")) throw new Error("how-to must be collapsed into a details element");
+// 版本号单一来源：客户端兜底常量必须与 package.json 一致（发版时只改 package.json 会在这里红）。
+const pkgVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+const clientSource = readFileSync(fileURLToPath(new URL("../lib/client.js", import.meta.url)), "utf8");
+if (!clientSource.includes(`const PLUGIN_VERSION = "${pkgVersion}"`)) throw new Error(`client fallback PLUGIN_VERSION must equal package.json version ${pkgVersion}`);
 if (!settingsMarkup.includes("type=\"password\"")) throw new Error("token input must be a password field");
 if (!settingsMarkup.includes("token.configured")) throw new Error("settings view must show the configured state");
 const settingsSyncMarkup = renderToStaticMarkup(react.createElement(TokenSettingsView, {
