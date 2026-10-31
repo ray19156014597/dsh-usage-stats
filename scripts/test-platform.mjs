@@ -871,6 +871,28 @@ async function testPlatformTokenRoute(root) {
 	const after = makeResponse();
 	await handler(request(tokenPath), after);
 	assert.equal(JSON.parse(after.body).configured, false);
+
+	// The store is only one of two sources: with the credential ref in effect, a
+	// clear/save must report what actually wins, never the intent.
+	const clearWithCredential = makeResponse();
+	await routes2.get(plugin.PLATFORM_TOKEN_PATH)(bodyRequest(tokenPath, "DELETE", ""), clearWithCredential);
+	const clearedBody = JSON.parse(clearWithCredential.body);
+	assert.equal(clearedBody.ok, true);
+	assert.equal(clearedBody.configured, true, "the credential ref still powers the query");
+	assert.equal(clearedBody.source, "credential", "the effective source must be the ref");
+	assert.equal(clearedBody.storedConfigured, false, "nothing is left in the panel-owned store");
+	assert.equal(clearedBody.credentialOverride, true);
+	const afterClearStatus = makeResponse();
+	await routes2.get(plugin.PLATFORM_TOKEN_PATH)(request(tokenPath), afterClearStatus);
+	assert.equal(JSON.parse(afterClearStatus.body).configured, true, "GET must agree with the DELETE response");
+
+	const saveUnderRef = makeResponse();
+	await routes2.get(plugin.PLATFORM_TOKEN_PATH)(bodyRequest(tokenPath, "POST", JSON.stringify({ token: "other-token-789" })), saveUnderRef);
+	const saveUnderRefBody = JSON.parse(saveUnderRef.body);
+	assert.equal(saveUnderRefBody.ok, true);
+	assert.equal(saveUnderRefBody.storedConfigured, true, "the POST did write the panel value");
+	assert.equal(saveUnderRefBody.source, "credential", "but the effective source is still the ref");
+	assert.equal(saveUnderRefBody.credentialOverride, true);
 	console.log("platform token settings route (fence, save, precedence, clear) ok");
 }
 
@@ -966,7 +988,34 @@ async function testPlatformCumulativeGap() {
 	assert.equal(walk.newest, "2026-10");
 	assert.equal(walk.scannedMonths, 6, "the whole window must be scanned");
 	assert.deepEqual(walk.range, { from: "2026-05", to: "2026-10" });
-	assert.equal(walk.limited, false, "an empty month below the oldest usage makes the window complete for observed activity");
+	// A fully scanned window says nothing about months before it: 2026-04 and older
+	// were never queried, so the sum is a scanned-range total, not a lifetime one.
+	assert.equal(walk.limited, true, "a fully scanned window cannot claim a lifetime total");
+	assert.equal(walk.limitedReason, "window");
+	assert.equal(walk.complete, false, "no verifiable end was reached, so coverage is not complete");
+
+	// Transient upstream failure mid-walk: the scan keeps what it read, but a 5xx is
+	// NOT evidence that history ended — limited + partial + incomplete.
+	const transient = await platform.fetchPlatformCumulativeTokenTotal("token-t", {
+		month: 10,
+		year: 2026,
+		maxMonths: 24,
+		monthTotal: async (m, y) => {
+			const key = `${y}-${String(m).padStart(2, "0")}`;
+			if (key === "2026-08") {
+				const error = new Error("upstream 503");
+				error.providerStatus = "unavailable";
+				throw error;
+			}
+			return key === "2026-10" ? 100 : 0;
+		}
+	});
+	assert.equal(transient.total, 100, "readable months must still be summed");
+	assert.equal(transient.partial, true, "a stopped walk is partial");
+	assert.equal(transient.complete, false, "a 503 must never be reported as a complete history");
+	assert.equal(transient.limited, true, "a 503 stop may hide older usage");
+	assert.equal(transient.limitedReason, "upstream");
+	assert.equal(transient.stoppedAt, "2026-08");
 
 	// Usage all the way down to the window edge: there may be more history.
 	const full = await platform.fetchPlatformCumulativeTokenTotal("token-t", {

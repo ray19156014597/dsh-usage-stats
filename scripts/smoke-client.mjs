@@ -478,6 +478,88 @@ const mergedNoPlatform = renderToStaticMarkup(react.createElement(DeepSeekAccoun
 if (mergedNoPlatform.includes("usage.bandSource")) throw new Error("the platform source note must hide without platform data");
 console.log("merged DeepSeek account+usage card ok");
 
+// F03: a failed platform refresh must be visible ON the card that shows the
+// amounts, with the time of the last success — not hidden in a collapsed
+// section and not replaced by a fresh-looking global timestamp. A HEALTHY
+// platform must add no line at all: the always-on "updated at" note looked
+// out of place in the card footer, so freshness stays on the panel footer.
+const platformErrorAt = Date.UTC(2026, 7, 23, 4, 5, 0);
+// Interpolating stub: the stale-data note must carry the upstream message and the
+// last-success time, so a key-only stub would hide exactly what we assert.
+const translateWithParams = (key, params) => (params === void 0 ? key : `${key}:${Object.values(params).join("|")}`);
+const cardWithError = renderToStaticMarkup(react.createElement(DeepSeekAccountUsageCard, {
+	provider: { id: "deepseek-official", displayName: "DeepSeek", accountMode: "balance" },
+	account: { id: "deepseek-official", displayName: "DeepSeek", mode: "balance", status: "ok", balance: { remaining: 10, currency: "CNY", unlimited: false, breakdown: { toppedUp: 10, granted: 0 } } },
+	accountLoading: false,
+	accountError: null,
+	platform: platformData,
+	platformLoading: false,
+	platformError: "HTTP 502",
+	platformOkAt: platformErrorAt,
+	month: "2026-08",
+	onMonthChange: () => {},
+	onRetry: () => {},
+	onRetryPlatform: () => {},
+	onConfigure: () => {},
+	localDayTokens: 5,
+	localMonthTokens: 6,
+	localTotalTokens: 7,
+	translate: translateWithParams
+}));
+if (!cardWithError.includes('data-platform-state="error"')) throw new Error("the account card must render the platform failure state");
+if (!cardWithError.includes("platform.staleNote")) throw new Error("the platform failure must use the stale-data note (message + last success time)");
+if (!cardWithError.includes("HTTP 502")) throw new Error("the upstream failure reason must be shown verbatim");
+const cardOkAt = renderToStaticMarkup(react.createElement(DeepSeekAccountUsageCard, {
+	provider: { id: "deepseek-official", displayName: "DeepSeek", accountMode: "balance" },
+	account: { id: "deepseek-official", displayName: "DeepSeek", mode: "balance", status: "ok", balance: { remaining: 10, currency: "CNY", unlimited: false, breakdown: { toppedUp: 10, granted: 0 } } },
+	accountLoading: false,
+	accountError: null,
+	platform: platformData,
+	platformLoading: false,
+	platformError: null,
+	platformOkAt: platformErrorAt,
+	month: "2026-08",
+	onMonthChange: () => {},
+	onRetry: () => {},
+	onRetryPlatform: () => {},
+	onConfigure: () => {},
+	localDayTokens: 5,
+	localMonthTokens: 6,
+	localTotalTokens: 7,
+	translate: translateWithParams
+}));
+if (cardOkAt.includes("data-platform-state") || cardOkAt.includes("platform.staleNote") || cardOkAt.includes("platform.neverLoaded")) throw new Error("a healthy platform fetch must add no extra line to the card");
+console.log("platform freshness/error state on the account card ok");
+
+// F05: the scanned-window caveat is data, not a permanent line of prose. The card
+// must NOT print 「累计（已查询区间）」 or 「统计范围 …」 (both were judged too loud);
+// the range lives in the total cell's tooltip instead, and the label stays 累计.
+{
+	const limitedCard = renderToStaticMarkup(react.createElement(DeepSeekAccountUsageCard, {
+		provider: { id: "deepseek-official", displayName: "DeepSeek", accountMode: "balance" },
+		account: null,
+		accountLoading: false,
+		accountError: null,
+		platform: platformData,
+		platformLoading: false,
+		platformError: null,
+		month: "2026-08",
+		onMonthChange: () => {},
+		onRetry: () => {},
+		onRetryPlatform: () => {},
+		onConfigure: () => {},
+		localDayTokens: 5,
+		localMonthTokens: 6,
+		localTotalTokens: 7,
+		totalScopeHint: "usage.scope",
+		translate: (key) => key
+	}));
+	if (!limitedCard.includes('title="usage.scope"')) throw new Error("the scanned range must be available as the total cell's tooltip");
+	if (!limitedCard.includes(">usage.totalTokens<")) throw new Error("the total label must stay the plain 累计 Tokens");
+	if (limitedCard.includes("usage.totalTokensScanned")) throw new Error("the scanned-range label must not render as visible text");
+	if (/>usage\.scope</.test(limitedCard)) throw new Error("the scanned range must not render as a standalone note line");
+}
+
 // The merged account module shows platform usage only for DeepSeek providers;
 // the removed provider guard no longer exists (asserted absent above).
 if (!platformMarkup.includes("platform.title")) throw new Error("the platform block must keep its small caption (no separate big title)");
@@ -939,10 +1021,12 @@ for (const fragment of ["platform.costAvailable !== false", '"platform.costUnava
 for (const fragment of ['setUsagePartial(payload.partial === true)', '"usage.partial"', '"usage.partial": "会话列表读取失败，统计可能不完整（已保留上次结果）。"', '"usage.partial": "Session listing failed — these numbers may be incomplete (last result kept)."']) {
 	if (!source.includes(fragment)) throw new Error(`missing partial-data contract: ${fragment}`);
 }
-// ⑦ 累计是有界窗口：limited 时标签换「近 24 个月」并给出扫描区间。
-for (const fragment of ["platformTotal.limited === true", '"usage.totalTokensLimited"', '"usage.scope"', "totalTokensLabel", "scopeNote"]) {
+// ⑦ 累计是有界窗口：`limited` 必须真实读出来，口径说明放在「累计」格的悬停提示里
+//    （"累计（已查询区间）"与"统计范围 …"两行不再作为常驻文案渲染）。
+for (const fragment of ["platformTotal.limited === true", '"usage.totalTokensLimited"', '"usage.scope"', "totalScopeHint", "title: totalScopeHint"]) {
 	if (!source.includes(fragment)) throw new Error(`missing cumulative-scope contract: ${fragment}`);
 }
+if (source.includes("scopeNote === null ? null")) throw new Error("the scanned range must not return as a standalone note line");
 // ⑧ 同步取消：客户端每轮一个序号 + 取消标记，旧轮询不得改写新一轮状态。
 for (const fragment of ["const syncSeqRef = react.useRef(0)", "syncSeqRef.current !== seq", "syncCancelledRef.current = true", "if (syncTimerRef.current !== null)"]) {
 	if (!source.includes(fragment)) throw new Error(`missing sync-cancel contract: ${fragment}`);

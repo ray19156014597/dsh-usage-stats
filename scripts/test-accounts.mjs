@@ -287,6 +287,49 @@ assert.equal(ACCOUNT_REFRESH_MS, 300000);
 }
 
 {
+	// A credential reference is only a NAME. Pointing it at another account must
+	// drop both the cached balance and its `lastOk` fallback: otherwise a forced
+	// query that fails would serve account A's number as account B's stale balance.
+	let secret = "sk-account-a";
+	let calls = 0;
+	let upstream = "ok";
+	const fetchImpl = async () => {
+		calls += 1;
+		if (upstream === "ok") return jsonResponse(deepseekBody());
+		return jsonResponse({ error: "upstream" }, 503);
+	};
+	const service = await createAccountService({
+		credentials: { resolve: async (ref) => (ref === "DEEPSEEK_API_KEY" ? { value: secret } : void 0) },
+		deps: { fetch: fetchImpl, now: () => NOW }
+	});
+	const accountA = await service.get("deepseek-official");
+	assert.equal(accountA.status, "ok");
+	assert.equal(accountA.balance.remaining, 36.44);
+	assert.equal(calls, 1);
+
+	// Same ref name, different secret (rotated key / edited credentials file), and
+	// the new account's first query fails: the cache must not answer with A.
+	secret = "sk-account-b";
+	upstream = "fail";
+	const failedB = await service.get("deepseek-official");
+	assert.equal(calls, 2, "a changed credential value must trigger a fresh query");
+	assert.equal(failedB.status, "unavailable");
+	assert.equal(failedB.balance, null, "another account's balance is never a fallback for this one");
+	assert.equal(failedB.stale, void 0, "no stale snapshot may be attached across identities");
+
+	// The same-account stale path still works: B succeeds, then B fails.
+	upstream = "ok";
+	const accountB = await service.get("deepseek-official", { force: true });
+	assert.equal(accountB.balance.remaining, 36.44);
+	upstream = "fail";
+	const staleB = await service.get("deepseek-official", { force: true });
+	assert.equal(staleB.status, "unavailable");
+	assert.equal(staleB.stale, true, "an account keeps its OWN last success as the stale fallback");
+	assert.equal(staleB.balance.remaining, 36.44);
+	console.log("account cache identity follows the resolved credential ok");
+}
+
+{
 	let answer = () => jsonResponse(deepseekBody());
 	const fetchImpl = async () => answer();
 	const service = await createAccountService({ credentials: credentials({ DEEPSEEK_API_KEY: KEY }), deps: deps(fetchImpl) });

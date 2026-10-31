@@ -192,6 +192,19 @@ credentials 文件中的引用，其次才用面板保存的值。未配置时�
 - 客户端只做“取数 + 在 DSH 既有节点上补数字”：`MutationObserver` 监听 DSH 重渲染并补回被替换的节点；会话切换、token 投影变化（600ms 防抖）立即取数，页面可见时每 20s 轮询一次（子代理用量不进父会话投影）。
 - 估算而非账单：实际扣费以 platform.deepseek.com 账单为准；用于核对时，整日仅含本会话的日期与平台账单完全一致。
 
+## v0.9.4 修复（2026-10-31，第三方审查报告 F02–F08）
+
+针对 `用量插件与桌面软件审查报告.md` 的 12 项缺陷，插件侧改动：
+
+- **累计口径（F05）**：`limited` 不再由"最老用量月是否等于扫描终点"推断。只有平台**结构性拒绝**（`invalid-response` / `unsupported`，即更早月份本来就没有数据）才算权威终点，那时才 `complete: true`、`limited: false`；窗口扫满、预算用尽、5xx/超时中断、以及"完全没用量"一律 `limited: true` 并给出 `limitedReason`（`window` / `budget` / `upstream`）。口径仍然对外可见，但**不作为常驻文案**：卡片里那句话（「累计（已查询区间）」+「统计范围 …」）被用户认为突兀，已经去掉，标签回到「累计 Tokens」，扫描区间与"更早月份不可查"收进「累计」格的悬停提示（`title`）。
+- **会话读取失败（F07）**：单个会话折叠/读取失败不再只写日志。响应带 `partial: true` 与 `failedSessions` 计数（列表失败另带 `failedListing`），已有缓存保留但明确标为不完整。
+- **凭据代次（F02）**：`clearToken` / `saveToken` / 网页登录捕获都会 `credentialGenRef += 1` 并清空平台数据；`loadPlatform` / `loadRecentPlatform` / `loadDayDetail` 回调校验代次，`loadPlatformTotal` 另外加了 `totalSeqRef` 请求序号。旧账号的在途响应不再能把数字写回界面。
+- **平台状态可见（F03）**：`loadPlatform` 不再在请求开始时清错误（否则"展开明细→命中缓存"会悄悄擦掉失败），成功时才清并记录 `platformOkAt`；**失败时**账户卡内多一行「平台数据更新失败：… （金额与请求数仍是 … 的结果）」。健康状态下不加常驻文案——那行"平台数据更新于…"在卡片底部显得突兀（用户反馈），新鲜度交给面板底部原有的「更新于」。
+- **凭据引用优先级（F08）**：token 路由的 POST/DELETE 不再写死 `configured/source`，改为按实际生效来源回报，并附 `storedConfigured` / `credentialOverride` / `ref`；界面据此提示"已清除面板保存值，凭据引用仍生效"。
+- **余额缓存身份（F04）**：账户缓存键由"引用名 + URL"改为"引用名 + URL + 解析出的凭据摘要"，换号时连同 `lastOk` 一起丢弃；同账户的 stale 回退行为不变。
+- **落盘临时名（§四）**：`usage-stats-platform.json` 与 `usage-stats-cache.json` 的临时文件改为 `${pid}.${random}.tmp`，多进程写同一 `DSH_HOME` 不再抢同一个暂存文件。
+- 新增 `scripts/test-client-races.mjs`（无 DOM 环境下对 bundle 源码的契约断言）与若干回归用例；`npm test` 现为 11 组。
+
 ## v0.9.3 调整（2026-10-30 深夜，随 v0.9.3 发布）
 
 - **侧栏徽标**：今日消费与今日 Tokens 改为同一行、同色 tertiary 的 `Tokens / 金额`（不再用琥珀色高亮）；数字前增加 6px 计费时段小圆点（空闲绿 / 高峰琥珀 / 平价蓝），与账户卡脚注共享同一个 `/price-period` 轮询。
@@ -312,14 +325,14 @@ npx --yes github:ray19156014597/dsh-usage-stats --check
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合；会话列表读取失败时带 `partial: true`（保留上次聚合） |
+| `GET` | `/api/usage-stats/usage?refresh=1` | 按日期/provider/model 聚合的 Token 与缓存命中率；结果在 60 秒窗口内复用，`refresh=1` 强制重新聚合；会话列表读取失败时带 `partial: true`（保留上次聚合），单个会话读取/折叠失败时另带 `failedSessions` 计数 |
 | `GET` | `/api/usage-stats/session?sessionId=…` | 该会话**连同全部 subagent 子会话**的估算费用：`total`（Token 构成、缓存命中率、请求数、`peak`/`idle`/`flat` 的 Token 与金额、按模型）、`main`、`subagents`（数量/Token/金额/逐子会话）、`turns`（逐轮 `mainCost`/`subagentCost`/`totalCost`）；未知会话 `404`，缺少参数 `400` |
-| `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游；连续瞬时故障时沿用最后一次成功余额并带 `stale: true` |
+| `GET` | `/api/usage-stats/account?refresh=1` | DeepSeek 余额快照；`refresh=1` 强制刷新上游；连续瞬时故障时沿用**同一凭据**最后一次成功的余额并带 `stale: true`（换号后不会复用上一个账户的余额） |
 | `GET` | `/api/usage-stats/platform?month=&year=&refresh=` | DeepSeek 平台用量（模型/按日 Token 明细与消费）；`refresh=1` 强制刷新；费用结构缺失时 `costAvailable: false` |
 | `GET` | `/api/usage-stats/price-period` | 当前计费时段：`period`（peak/idle/flat）、`reason`（peak-window/off-window/weekend/holiday/flat）、`windows`、`prices.flash/pro`（命中/未命中/输出，元每百万）、`next`（下一次切换的时刻与目标时段）、`calendar`（节假日日历来源/同步时间/年份/假日数）；只读、无需凭据 |
-| `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token 总量（有界窗口）：`scannedMonths` / `range` / `limited` 说明扫描范围与完整性；`refresh=1` 强制重扫各月 |
+| `GET` | `/api/usage-stats/platform/total?refresh=1` | 平台累计 Token（有界窗口）：`scannedMonths` / `range` / `limited` / `limitedReason` / `partial` / `complete` —— 只有平台结构性拒绝更早月份时才 `complete: true`；其余情况一律 `limited: true`（"已查询区间合计"） |
 | `GET` | `/api/usage-stats/platform/day?date=YYYY-MM-DD&refresh=1` | 某一天的逐小时用量与按 API Key 明细；`refresh=1` 绕过五分钟缓存 |
-| `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/token` | 用量 Token 设置（状态/保存/清除；Token 本身永不返回浏览器） |
+| `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/token` | 用量 Token 设置（状态/保存/清除；Token 本身永不返回浏览器）。响应始终报告**实际生效**的来源：`source`（`credential`/`stored`/`null`）、`storedConfigured`、`credentialOverride`、`ref` |
 | `GET`/`POST`/`DELETE` | `/api/usage-stats/platform/sync` | 网页登录自动同步（开始/状态/取消；按需拉起系统浏览器窗口） |
 
 非 GET 返回 `405`（token 与 sync 路由允许 GET/POST/DELETE），非回环请求或跨站 `Origin`/`Sec-Fetch-Site` 返回 `403`，非 JSON 请求体返回 `415`；所有响应均为 JSON 并带 `Cache-Control: no-cache`。

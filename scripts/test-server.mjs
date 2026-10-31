@@ -374,8 +374,46 @@ async function testPersistedListingFailure(root) {
 	// A SUCCESSFUL listing without that session is the only reason to prune.
 	mode = "empty";
 	const pruned = await plugin.collectUsage(ctx);
-	assert.equal(pruned.partial, void 0, "a complete listing is not partial");
+	assert.equal(pruned.partial, void 0, "a complete listing is a complete listing");
+	assert.equal(pruned.failedSessions, void 0, "no read failures means no failure counter");
 	assert.equal(pruned.total.tokens, 0, "a session missing from a successful listing must be pruned");
+}
+
+/**
+ * Report repro 7: the listing succeeded but the only session could not be read.
+ * The fold used to answer 0 tokens (or last run's number) behind a warning log,
+ * so an unreadable/corrupt session looked like "no usage at all".
+ */
+async function testPersistedReadFailure(root) {
+	const home = join(root, "read-failure");
+	const plugin = await freshModule("read-failure", home);
+	const id = "unreadable-session";
+	let readFails = false;
+	const persistence = {
+		list: async () => [{ header: { id }, revision: readFails ? "r2" : "r1" }],
+		readFrom: async (sessionId, fromSeq) => {
+			if (readFails) throw new Error("EACCES: session log unreadable");
+			return { events: [usageEvent(1, 100)].filter((event) => event.seq > fromSeq) };
+		}
+	};
+	const ctx = makeContext({ sessions: { list: () => [] }, persistence });
+	assert.equal((await plugin.collectUsage(ctx)).total.tokens, 100);
+
+	// Same session, now unreadable: keep the cached fold, but say the result is partial.
+	readFails = true;
+	const broken = await plugin.collectUsage(ctx);
+	assert.equal(broken.total.tokens, 100, "the cached fold must be kept, not zeroed");
+	assert.equal(broken.partial, true, "an unreadable session makes the payload incomplete");
+	assert.equal(broken.failedSessions, 1, "the payload must count the failed sessions");
+
+	// Cold start with the same failure: 0 tokens is correct data, but never "complete".
+	const coldHome = join(root, "read-failure-cold");
+	const cold = await freshModule("read-failure-cold", coldHome);
+	const coldCtx = makeContext({ sessions: { list: () => [] }, persistence });
+	const coldResult = await cold.collectUsage(coldCtx);
+	assert.equal(coldResult.total.tokens, 0);
+	assert.equal(coldResult.partial, true, "empty because unreadable is not the same as empty");
+	assert.equal(coldResult.failedSessions, 1);
 }
 
 async function testSessionCostRoute(root) {
@@ -466,6 +504,7 @@ try {
 	await testUsageSnapshotReuse(root);
 	await testUsageSnapshotStaleWhileRevalidate(root);
 	await testPersistedListingFailure(root);
+	await testPersistedReadFailure(root);
 	console.log("SERVER REGRESSION TESTS PASSED");
 } finally {
 	delete process.env.DSH_HOME;
